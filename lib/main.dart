@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:provider/provider.dart';
+// import 'package:path_provider/path_provider.dart'; // Add this import
+
 
 // Import your Hive models
 import 'models/customer.dart';
@@ -58,6 +60,45 @@ class AppState extends ChangeNotifier {
     return trialEnd.difference(now).inDays + 1; // +1 to count current day
   }
   bool get hasUsedTrial => _currentSubscriptionInfo?.hasUsedTrial == true;
+
+  // --- Reporting Methods (NEW) ---
+  int get totalCustomers => customerBox.length;
+
+  int get totalOrders => orderBox.length;
+
+  int get totalMeasurements => measurementBox.length;
+
+  double get totalRevenue {
+    return orderBox.values
+        .where((order) => order.status == 'Delivered') // Only count delivered orders as revenue
+        .fold(0.0, (sum, order) => sum + order.totalPrice);
+  }
+
+  double get totalOutstandingPayments {
+    return orderBox.values
+        .where((order) => order.status != 'Delivered') // Exclude delivered orders
+        .fold(0.0, (sum, order) => sum + order.remainingPayment);
+  }
+
+  double get averageOrderValue {
+    if (orderBox.isEmpty) return 0.0;
+    final total = orderBox.values.fold(0.0, (sum, order) => sum + order.totalPrice);
+    return total / orderBox.length;
+  }
+
+  // Get count of orders by status
+  Map<String, int> get ordersByStatus {
+    final statusCounts = <String, int>{
+      'Cutting': 0,
+      'Stitching': 0,
+      'Ready': 0,
+      'Delivered': 0,
+    };
+    for (var order in orderBox.values) {
+      statusCounts[order.status] = (statusCounts[order.status] ?? 0) + 1;
+    }
+    return statusCounts;
+  }
 
   // --- Customer Management State ---
   List<Customer> _customers = [];
@@ -164,10 +205,11 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _initializeServices() async {
-    customerBox = await Hive.openBox<Customer>('customers');
-    orderBox = await Hive.openBox<Order>('orders');
-    measurementBox = await Hive.openBox<Measurement>('measurements');
-    subscriptionInfoBox = await Hive.openBox<SubscriptionInfo>('subscriptionInfo');
+    // ✅ Use Hive.box() to get already-opened boxes (not openBox)
+    customerBox = Hive.box<Customer>('customers');
+    orderBox = Hive.box<Order>('orders');
+    measurementBox = Hive.box<Measurement>('measurements');
+    subscriptionInfoBox = Hive.box<SubscriptionInfo>('subscriptionInfo');
 
     _prefs = await SharedPreferences.getInstance();
 
@@ -359,11 +401,18 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Hive.initFlutter();
+  // print('Hive path: ${(await getApplicationDocumentsDirectory()).path}');
 
   Hive.registerAdapter(CustomerAdapter());
   Hive.registerAdapter(OrderAdapter());
   Hive.registerAdapter(MeasurementAdapter());
   Hive.registerAdapter(SubscriptionInfoAdapter());
+
+  // ✅ Open boxes HERE before runApp - this ensures data persists
+  await Hive.openBox<Customer>('customers');
+  await Hive.openBox<Order>('orders');
+  await Hive.openBox<Measurement>('measurements');
+  await Hive.openBox<SubscriptionInfo>('subscriptionInfo');
 
   runApp(
     ChangeNotifierProvider(
@@ -372,7 +421,6 @@ void main() async {
     ),
   );
 }
-
 // =======================================================================
 // DarziApp: The root widget of our application
 // =======================================================================
@@ -382,7 +430,8 @@ class DarziApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'DarziApp',
+      title: 'Digital Darzi',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
         primarySwatch: Colors.teal,
         visualDensity: VisualDensity.adaptivePlatformDensity,

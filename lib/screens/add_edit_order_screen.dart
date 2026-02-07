@@ -146,7 +146,7 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
       _selectedCustomerId = customers.first.key.toString();
     }
     if (!_isEditing && _selectedMeasurementId == null && customerMeasurements.isNotEmpty) {
-      _selectedMeasurementId = customerMeasurements.first.first.key.toString(); // ERROR FIX: Access first item in list
+      _selectedMeasurementId = customerMeasurements.first.key.toString(); // ERROR FIX: Access first item in list
     }
 
     return Scaffold(

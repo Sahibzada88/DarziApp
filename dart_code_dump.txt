@@ -1,0 +1,3140 @@
+﻿
+==============================
+FILE: D:\DarziApp\darzi_app\lib\main.dart
+DESCRIPTION:  m a
+==============================
+
+import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:provider/provider.dart';
+// import 'package:path_provider/path_provider.dart'; // Add this import
+
+
+// Import your Hive models
+import 'models/customer.dart';
+import 'models/order.dart';
+import 'models/measurement.dart';
+import 'models/subscription_info.dart';
+import 'screens/main_home_screen.dart'; // Add this import
+// =======================================================================
+// PHASE 1: Step 1.6 - Setup Provider for app state management
+// Our global app state, accessible from anywhere in the app
+// =======================================================================
+class AppState extends ChangeNotifier {
+  // --- General App State ---
+  int _counter = 0; // For basic testing, can be removed later
+  int get counter => _counter;
+  void incrementCounter() {
+    _counter++;
+    notifyListeners();
+  }
+
+  String _appTitle = "DarziApp";
+  String get appTitle => _appTitle;
+
+  // --- SharedPreferences & Hive Boxes ---
+  late SharedPreferences _prefs;
+  SharedPreferences get prefs => _prefs;
+
+  late Box<Customer> customerBox;
+  late Box<Order> orderBox;
+  late Box<Measurement> measurementBox;
+  late Box<SubscriptionInfo> subscriptionInfoBox;
+
+  // --- Subscription and Trial State ---
+  SubscriptionInfo? _currentSubscriptionInfo;
+  SubscriptionInfo? get currentSubscriptionInfo => _currentSubscriptionInfo;
+
+  // Defined Limits for Free/Trial users
+  static const int maxFreeCustomers = 20;
+  static const int maxFreeOrders = 30;
+  static const int maxFreeMeasurements = 30;
+  static const int trialDurationDays = 7;
+
+  bool get isPremiumUser => _currentSubscriptionInfo?.isSubscribed == true;
+  bool get isTrialActive {
+    if (_currentSubscriptionInfo?.trialStartDate == null) return false;
+    final now = DateTime.now();
+    final trialEnd = _currentSubscriptionInfo!.trialStartDate!.add(const Duration(days: trialDurationDays));
+    return now.isBefore(trialEnd);
+  }
+  int get daysLeftInTrial {
+    if (!isTrialActive) return 0;
+    final now = DateTime.now();
+    final trialEnd = _currentSubscriptionInfo!.trialStartDate!.add(const Duration(days: trialDurationDays));
+    return trialEnd.difference(now).inDays + 1; // +1 to count current day
+  }
+  bool get hasUsedTrial => _currentSubscriptionInfo?.hasUsedTrial == true;
+
+  // --- Reporting Methods (NEW) ---
+  int get totalCustomers => customerBox.length;
+
+  int get totalOrders => orderBox.length;
+
+  int get totalMeasurements => measurementBox.length;
+
+  double get totalRevenue {
+    return orderBox.values
+        .where((order) => order.status == 'Delivered') // Only count delivered orders as revenue
+        .fold(0.0, (sum, order) => sum + order.totalPrice);
+  }
+
+  double get totalOutstandingPayments {
+    return orderBox.values
+        .where((order) => order.status != 'Delivered') // Exclude delivered orders
+        .fold(0.0, (sum, order) => sum + order.remainingPayment);
+  }
+
+  double get averageOrderValue {
+    if (orderBox.isEmpty) return 0.0;
+    final total = orderBox.values.fold(0.0, (sum, order) => sum + order.totalPrice);
+    return total / orderBox.length;
+  }
+
+  // Get count of orders by status
+  Map<String, int> get ordersByStatus {
+    final statusCounts = <String, int>{
+      'Cutting': 0,
+      'Stitching': 0,
+      'Ready': 0,
+      'Delivered': 0,
+    };
+    for (var order in orderBox.values) {
+      statusCounts[order.status] = (statusCounts[order.status] ?? 0) + 1;
+    }
+    return statusCounts;
+  }
+
+  // --- Customer Management State ---
+  List<Customer> _customers = [];
+  String _customerSearchQuery = ''; // NEW: Search query for customers
+  void setCustomerSearchQuery(String query) {
+    _customerSearchQuery = query.toLowerCase();
+    notifyListeners(); // Notify to re-filter the list
+  }
+  List<Customer> get customers {
+    if (_customerSearchQuery.isEmpty) {
+      return _customers;
+    } else {
+      return _customers.where((customer) {
+        return customer.name.toLowerCase().contains(_customerSearchQuery) ||
+               customer.phone.toLowerCase().contains(_customerSearchQuery) ||
+               customer.address.toLowerCase().contains(_customerSearchQuery);
+      }).toList();
+    }
+  }
+
+  int get customerCount => customerBox.length;
+
+  bool get canAddMoreCustomers {
+    if (isPremiumUser) return true;
+    return customerCount < maxFreeCustomers;
+  }
+
+  String get customerLimitMessage {
+    if (isPremiumUser) return "You have unlimited customer slots.";
+    if (!isTrialActive && hasUsedTrial) return "Trial expired. Upgrade to add more customers.";
+    return "You can add ${maxFreeCustomers - customerCount} more customers (Max $maxFreeCustomers in free/trial).";
+  }
+
+  // --- Measurement Management State (NEW) ---
+  List<Measurement> _measurements = [];
+  String _measurementSearchQuery = ''; // NEW: Search query for measurements
+  void setMeasurementSearchQuery(String query) {
+    _measurementSearchQuery = query.toLowerCase();
+    notifyListeners(); // Notify to re-filter the list
+  }
+  List<Measurement> get measurements {
+    if (_measurementSearchQuery.isEmpty) {
+      return _measurements;
+    } else {
+      return _measurements.where((measurement) {
+        final customer = getCustomerById(measurement.customerId);
+        return (customer?.name.toLowerCase().contains(_measurementSearchQuery) ?? false) ||
+               measurement.type.toLowerCase().contains(_measurementSearchQuery) ||
+               measurement.key.toString().contains(_measurementSearchQuery); // Search by ID
+      }).toList();
+    }
+  }
+
+  int get measurementCount => measurementBox.length;
+
+  bool get canAddMoreMeasurements {
+    if (isPremiumUser) return true;
+    return measurementCount < maxFreeMeasurements;
+  }
+
+  String get measurementLimitMessage {
+    if (isPremiumUser) return "You have unlimited measurement slots.";
+    if (!isTrialActive && hasUsedTrial) return "Trial expired. Upgrade to add more measurements.";
+    return "You can add ${maxFreeMeasurements - measurementCount} more measurements (Max $maxFreeMeasurements in free/trial).";
+  }
+
+  // --- Order Management State (NEW) ---
+  List<Order> _orders = [];
+  String _orderSearchQuery = ''; // NEW: Search query for orders
+  void setOrderSearchQuery(String query) {
+    _orderSearchQuery = query.toLowerCase();
+    notifyListeners(); // Notify to re-filter the list
+  }
+  List<Order> get orders {
+    if (_orderSearchQuery.isEmpty) {
+      return _orders;
+    } else {
+      return _orders.where((order) {
+        final customer = getCustomerById(order.customerId);
+        return (customer?.name.toLowerCase().contains(_orderSearchQuery) ?? false) ||
+               order.trackingNumber?.toLowerCase().contains(_orderSearchQuery) == true || // Search tracking number
+               order.status.toLowerCase().contains(_orderSearchQuery) ||
+               order.key.toString().contains(_orderSearchQuery); // Search by Order ID
+      }).toList();
+    }
+  }
+
+  int get orderCount => orderBox.length;
+
+  bool get canAddMoreOrders {
+    if (isPremiumUser) return true;
+    return orderCount < maxFreeOrders;
+  }
+
+  String get orderLimitMessage {
+    if (isPremiumUser) return "You have unlimited order slots.";
+    if (!isTrialActive && hasUsedTrial) return "Trial expired. Upgrade to add more orders.";
+    return "You can add ${maxFreeOrders - orderCount} more orders (Max $maxFreeOrders in free/trial).";
+  }
+
+  // Constructor and Initialization
+  AppState() {
+    _initializeServices();
+  }
+
+  Future<void> _initializeServices() async {
+    // âœ… Use Hive.box() to get already-opened boxes (not openBox)
+    customerBox = Hive.box<Customer>('customers');
+    orderBox = Hive.box<Order>('orders');
+    measurementBox = Hive.box<Measurement>('measurements');
+    subscriptionInfoBox = Hive.box<SubscriptionInfo>('subscriptionInfo');
+
+    _prefs = await SharedPreferences.getInstance();
+
+    _loadCustomers();
+    _loadMeasurements();
+    _loadOrders();
+    _loadSubscriptionInfo();
+  }
+
+  // --- Methods for Subscription/Trial Management ---
+  void _loadSubscriptionInfo() {
+    if (subscriptionInfoBox.isNotEmpty) {
+      _currentSubscriptionInfo = subscriptionInfoBox.getAt(0);
+    } else {
+      _currentSubscriptionInfo = SubscriptionInfo(
+        isSubscribed: false,
+        trialStartDate: null,
+        hasUsedTrial: false,
+      );
+      subscriptionInfoBox.add(_currentSubscriptionInfo!);
+    }
+    notifyListeners();
+  }
+
+  Future<void> startTrial() async {
+    if (_currentSubscriptionInfo != null && !_currentSubscriptionInfo!.hasUsedTrial) {
+      _currentSubscriptionInfo!.trialStartDate = DateTime.now();
+      _currentSubscriptionInfo!.hasUsedTrial = true;
+      await _currentSubscriptionInfo!.save();
+      notifyListeners();
+    }
+  }
+
+  Future<void> upgradeToPremium() async {
+    if (_currentSubscriptionInfo != null) {
+      _currentSubscriptionInfo!.isSubscribed = true;
+      await _currentSubscriptionInfo!.save();
+      notifyListeners();
+    }
+  }
+
+  // --- Methods for Customer Management ---
+  void _loadCustomers() {
+    _customers = customerBox.values.toList();
+    notifyListeners();
+  }
+
+  void refreshCustomers() {
+    _loadCustomers();
+  }
+
+  Future<void> addCustomer(Customer customer) async {
+    if (!canAddMoreCustomers && !isPremiumUser) {
+      if (!isTrialActive && !hasUsedTrial) {
+        await startTrial();
+        if (!canAddMoreCustomers) {
+          throw Exception("Trial started, but customer limit still reached. Upgrade to add more customers.");
+        }
+      } else if (!isTrialActive && hasUsedTrial) {
+         throw Exception("Trial expired. Upgrade to add more customers.");
+      } else {
+         throw Exception("Customer limit reached. Upgrade to add more customers.");
+      }
+    }
+    await customerBox.add(customer);
+    _loadCustomers();
+  }
+
+  Future<void> updateCustomer(Customer customer) async {
+    await customer.save();
+    _loadCustomers();
+  }
+
+  Future<void> deleteCustomer(Customer customer) async {
+    final customerKey = customer.key as int;
+    final associatedOrders = orderBox.values.where((o) => o.customerId == customerKey.toString()).toList();
+    for (var order in associatedOrders) {
+      await order.delete();
+    }
+    final associatedMeasurements = measurementBox.values.where((m) => m.customerId == customerKey.toString()).toList();
+    for (var measurement in associatedMeasurements) {
+      await measurement.delete();
+    }
+    await customer.delete();
+    _loadCustomers();
+    _loadOrders();
+    _loadMeasurements();
+  }
+
+  Customer? getCustomerById(String customerId) {
+    return customerBox.get(int.parse(customerId));
+  }
+
+  // --- Methods for Measurement Management ---
+  void _loadMeasurements() {
+    _measurements = measurementBox.values.toList();
+    notifyListeners();
+  }
+
+  void refreshMeasurements() {
+    _loadMeasurements();
+  }
+
+  Future<void> addMeasurement(Measurement measurement) async {
+    if (!canAddMoreMeasurements && !isPremiumUser) {
+      if (!isTrialActive && !hasUsedTrial) {
+        await startTrial();
+        if (!canAddMoreMeasurements) {
+          throw Exception("Trial started, but measurement limit still reached. Upgrade to add more measurements.");
+        }
+      } else if (!isTrialActive && hasUsedTrial) {
+         throw Exception("Trial expired. Upgrade to add more measurements.");
+      } else {
+         throw Exception("Measurement limit reached. Upgrade to add more measurements.");
+      }
+    }
+    await measurementBox.add(measurement);
+    _loadMeasurements();
+  }
+
+  Future<void> updateMeasurement(Measurement measurement) async {
+    await measurement.save();
+    _loadMeasurements();
+  }
+
+  Future<void> deleteMeasurement(Measurement measurement) async {
+    await measurement.delete();
+    _loadMeasurements();
+  }
+
+  Measurement? getMeasurementById(String measurementId) {
+    return measurementBox.get(int.parse(measurementId));
+  }
+
+  List<Measurement> getMeasurementsForCustomer(String customerId) {
+    return _measurements.where((m) => m.customerId == customerId).toList();
+  }
+
+  // --- Methods for Order Management ---
+  void _loadOrders() {
+    _orders = orderBox.values.toList();
+    notifyListeners();
+  }
+
+  void refreshOrders() {
+    _loadOrders();
+  }
+
+  Future<void> addOrder(Order order) async {
+    if (!canAddMoreOrders && !isPremiumUser) {
+      if (!isTrialActive && !hasUsedTrial) {
+        await startTrial();
+        if (!canAddMoreOrders) {
+          throw Exception("Trial started, but order limit still reached. Upgrade to add more orders.");
+        }
+      } else if (!isTrialActive && hasUsedTrial) {
+         throw Exception("Trial expired. Upgrade to add more orders.");
+      } else {
+         throw Exception("Order limit reached. Upgrade to add more orders.");
+      }
+    }
+    await orderBox.add(order);
+    _loadOrders();
+  }
+
+  Future<void> updateOrder(Order order) async {
+    await order.save();
+    _loadOrders();
+  }
+
+  Future<void> deleteOrder(Order order) async {
+    await order.delete();
+    _loadOrders();
+  }
+
+  Order? getOrderById(String orderId) {
+    return orderBox.get(int.parse(orderId));
+  }
+
+  List<Order> getOrdersForCustomer(String customerId) {
+    return _orders.where((o) => o.customerId == customerId).toList();
+  }
+}
+
+// =======================================================================
+// Main function: Entry point of the Flutter app
+// =======================================================================
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  await Hive.initFlutter();
+  // print('Hive path: ${(await getApplicationDocumentsDirectory()).path}');
+
+  Hive.registerAdapter(CustomerAdapter());
+  Hive.registerAdapter(OrderAdapter());
+  Hive.registerAdapter(MeasurementAdapter());
+  Hive.registerAdapter(SubscriptionInfoAdapter());
+
+  // âœ… Open boxes HERE before runApp - this ensures data persists
+  await Hive.openBox<Customer>('customers');
+  await Hive.openBox<Order>('orders');
+  await Hive.openBox<Measurement>('measurements');
+  await Hive.openBox<SubscriptionInfo>('subscriptionInfo');
+
+  runApp(
+    ChangeNotifierProvider(
+      create: (context) => AppState(),
+      child: const DarziApp(),
+    ),
+  );
+}
+// =======================================================================
+// DarziApp: The root widget of our application
+// =======================================================================
+class DarziApp extends StatelessWidget {
+  const DarziApp({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Digital Darzi',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        primarySwatch: Colors.teal,
+        visualDensity: VisualDensity.adaptivePlatformDensity,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.teal,
+          foregroundColor: Colors.white,
+          iconTheme: IconThemeData(color: Colors.white),
+        ),
+        cardTheme: CardThemeData( // Changed CardThemeData to CardTheme
+          elevation: 4,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.teal,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          ),
+        ),
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(
+            foregroundColor: Colors.teal,
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Colors.teal),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Colors.teal, width: 2),
+          ),
+          labelStyle: TextStyle(color: Colors.grey[700]),
+          floatingLabelStyle: const TextStyle(color: Colors.teal),
+          contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+        ),
+      ),
+      home: const MainHomeScreen(),
+    );
+  }
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\models\customer.dart
+DESCRIPTION:  c u
+==============================
+
+import 'package:hive/hive.dart';
+
+part 'customer.g.dart'; // This line will be generated by build_runner
+
+@HiveType(typeId: 0) // Unique ID for this type across all your Hive models
+class Customer extends HiveObject {
+  @HiveField(0)
+  late String name;
+
+  @HiveField(1)
+  late String phone;
+
+  @HiveField(2)
+  late String address;
+
+  Customer({required this.name, required this.phone, required this.address});
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\models\customer.g.dart
+DESCRIPTION:  c u
+==============================
+
+// GENERATED CODE - DO NOT MODIFY BY HAND
+
+part of 'customer.dart';
+
+// **************************************************************************
+// TypeAdapterGenerator
+// **************************************************************************
+
+class CustomerAdapter extends TypeAdapter<Customer> {
+  @override
+  final int typeId = 0;
+
+  @override
+  Customer read(BinaryReader reader) {
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
+    return Customer(
+      name: fields[0] as String,
+      phone: fields[1] as String,
+      address: fields[2] as String,
+    );
+  }
+
+  @override
+  void write(BinaryWriter writer, Customer obj) {
+    writer
+      ..writeByte(3)
+      ..writeByte(0)
+      ..write(obj.name)
+      ..writeByte(1)
+      ..write(obj.phone)
+      ..writeByte(2)
+      ..write(obj.address);
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CustomerAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\models\measurement.dart
+DESCRIPTION:  m e
+==============================
+
+import 'package:hive/hive.dart';
+
+part 'measurement.g.dart'; // This line will be generated
+
+@HiveType(typeId: 2) // Unique ID for this type
+class Measurement extends HiveObject {
+  @HiveField(0)
+  late String customerId; // Link to customer
+
+  @HiveField(1)
+  late String type; // e.g., 'Gents Qameez', 'Ladies Shirt'
+
+  @HiveField(2)
+  late Map<String, double> values; // e.g., {'Chest': 20.0, 'Sleeve': 24.5}
+
+  Measurement({required this.customerId, required this.type, required this.values});
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\models\measurement.g.dart
+DESCRIPTION:  m e
+==============================
+
+// GENERATED CODE - DO NOT MODIFY BY HAND
+
+part of 'measurement.dart';
+
+// **************************************************************************
+// TypeAdapterGenerator
+// **************************************************************************
+
+class MeasurementAdapter extends TypeAdapter<Measurement> {
+  @override
+  final int typeId = 2;
+
+  @override
+  Measurement read(BinaryReader reader) {
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
+    return Measurement(
+      customerId: fields[0] as String,
+      type: fields[1] as String,
+      values: (fields[2] as Map).cast<String, double>(),
+    );
+  }
+
+  @override
+  void write(BinaryWriter writer, Measurement obj) {
+    writer
+      ..writeByte(3)
+      ..writeByte(0)
+      ..write(obj.customerId)
+      ..writeByte(1)
+      ..write(obj.type)
+      ..writeByte(2)
+      ..write(obj.values);
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MeasurementAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\models\order.dart
+DESCRIPTION:  o r
+==============================
+
+import 'package:hive/hive.dart';
+
+part 'order.g.dart';
+
+@HiveType(typeId: 1)
+class Order extends HiveObject {
+  @HiveField(0)
+  late String customerId;
+
+  @HiveField(1)
+  late String measurementId;
+
+  @HiveField(2)
+  late DateTime deliveryDate;
+
+  @HiveField(3)
+  late String status;
+
+  @HiveField(4)
+  late double totalPrice;
+
+  @HiveField(5)
+  late double advancePayment;
+
+  @HiveField(6)
+  late double remainingPayment;
+
+  @HiveField(7) // NEW: Add tracking number
+  late String? trackingNumber; // Made nullable for existing orders or optional
+
+  Order({
+    required this.customerId,
+    required this.measurementId,
+    required this.deliveryDate,
+    required this.status,
+    required this.totalPrice,
+    required this.advancePayment,
+    required this.remainingPayment,
+    this.trackingNumber, // Add to constructor
+  });
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\models\order.g.dart
+DESCRIPTION:  o r
+==============================
+
+// GENERATED CODE - DO NOT MODIFY BY HAND
+
+part of 'order.dart';
+
+// **************************************************************************
+// TypeAdapterGenerator
+// **************************************************************************
+
+class OrderAdapter extends TypeAdapter<Order> {
+  @override
+  final int typeId = 1;
+
+  @override
+  Order read(BinaryReader reader) {
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
+    return Order(
+      customerId: fields[0] as String,
+      measurementId: fields[1] as String,
+      deliveryDate: fields[2] as DateTime,
+      status: fields[3] as String,
+      totalPrice: fields[4] as double,
+      advancePayment: fields[5] as double,
+      remainingPayment: fields[6] as double,
+      trackingNumber: fields[7] as String?,
+    );
+  }
+
+  @override
+  void write(BinaryWriter writer, Order obj) {
+    writer
+      ..writeByte(8)
+      ..writeByte(0)
+      ..write(obj.customerId)
+      ..writeByte(1)
+      ..write(obj.measurementId)
+      ..writeByte(2)
+      ..write(obj.deliveryDate)
+      ..writeByte(3)
+      ..write(obj.status)
+      ..writeByte(4)
+      ..write(obj.totalPrice)
+      ..writeByte(5)
+      ..write(obj.advancePayment)
+      ..writeByte(6)
+      ..write(obj.remainingPayment)
+      ..writeByte(7)
+      ..write(obj.trackingNumber);
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrderAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\models\subscription_info.dart
+DESCRIPTION:  s u
+==============================
+
+import 'package:hive/hive.dart';
+
+part 'subscription_info.g.dart';
+
+@HiveType(typeId: 3)
+class SubscriptionInfo extends HiveObject {
+  @HiveField(0)
+  late bool isSubscribed;
+
+  @HiveField(1)
+  late DateTime? trialStartDate;
+
+  @HiveField(2)
+  late bool hasUsedTrial; // To prevent giving multiple free trials
+
+  SubscriptionInfo({
+    this.isSubscribed = false,
+    this.trialStartDate,
+    this.hasUsedTrial = false,
+  });
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\models\subscription_info.g.dart
+DESCRIPTION:  s u
+==============================
+
+// GENERATED CODE - DO NOT MODIFY BY HAND
+
+part of 'subscription_info.dart';
+
+// **************************************************************************
+// TypeAdapterGenerator
+// **************************************************************************
+
+class SubscriptionInfoAdapter extends TypeAdapter<SubscriptionInfo> {
+  @override
+  final int typeId = 3;
+
+  @override
+  SubscriptionInfo read(BinaryReader reader) {
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
+    return SubscriptionInfo(
+      isSubscribed: fields[0] as bool,
+      trialStartDate: fields[1] as DateTime?,
+      hasUsedTrial: fields[2] as bool,
+    );
+  }
+
+  @override
+  void write(BinaryWriter writer, SubscriptionInfo obj) {
+    writer
+      ..writeByte(3)
+      ..writeByte(0)
+      ..write(obj.isSubscribed)
+      ..writeByte(1)
+      ..write(obj.trialStartDate)
+      ..writeByte(2)
+      ..write(obj.hasUsedTrial);
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SubscriptionInfoAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\screens\add_edit_customer_screen.dart
+DESCRIPTION:  a d
+==============================
+
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../models/customer.dart';
+import '../main.dart'; // Import AppState
+
+class AddEditCustomerScreen extends StatefulWidget {
+  final Customer? customer; // Null for add, not null for edit
+
+  const AddEditCustomerScreen({Key? key, this.customer}) : super(key: key);
+
+  @override
+  State<AddEditCustomerScreen> createState() => _AddEditCustomerScreenState();
+}
+
+class _AddEditCustomerScreenState extends State<AddEditCustomerScreen> {
+  final _formKey = GlobalKey<FormState>();
+  late TextEditingController _nameController;
+  late TextEditingController _phoneController;
+  late TextEditingController _addressController;
+
+  bool get _isEditing => widget.customer != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.customer?.name ?? '');
+    _phoneController = TextEditingController(text: widget.customer?.phone ?? '');
+    _addressController = TextEditingController(text: widget.customer?.address ?? '');
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _phoneController.dispose();
+    _addressController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveCustomer() async {
+    if (_formKey.currentState!.validate()) {
+      final appState = Provider.of<AppState>(context, listen: false);
+      _formKey.currentState!.save();
+
+      if (_isEditing) {
+        // Update existing customer
+        widget.customer!.name = _nameController.text;
+        widget.customer!.phone = _phoneController.text;
+        widget.customer!.address = _addressController.text;
+        await appState.updateCustomer(widget.customer!);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Customer ${widget.customer!.name} updated!')),
+        );
+      } else {
+        // Add new customer
+        final newCustomer = Customer(
+          name: _nameController.text,
+          phone: _phoneController.text,
+          address: _addressController.text,
+        );
+        try {
+          await appState.addCustomer(newCustomer);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Customer ${newCustomer.name} added!')),
+          );
+        } catch (e) {
+          // Catch the limit exception from AppState
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(e.toString().replaceAll('Exception: ', ''))),
+          );
+          // Optionally show a dialog for upgrade prompt if it's a limit issue
+          if (e.toString().contains('Upgrade')) {
+            // Navigate to Subscription/Upgrade screen or show a specific dialog
+          }
+          return; // Don't pop if adding failed due to limit
+        }
+      }
+      Navigator.of(context).pop(); // Go back to customer list
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = Provider.of<AppState>(context);
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(_isEditing ? 'Edit Customer' : 'Add Customer'),
+      ),
+      body: SingleChildScrollView( // Allows scrolling on small screens
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              if (!_isEditing && !appState.isPremiumUser) // Show limit message only when adding
+                Card(
+                  margin: const EdgeInsets.only(bottom: 16.0),
+                  color: appState.customerCount >= AppState.maxFreeCustomers ? Colors.red[50] : Colors.blue[50],
+                  child: Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: Text(
+                      appState.customerLimitMessage,
+                      style: TextStyle(
+                        color: appState.customerCount >= AppState.maxFreeCustomers ? Colors.red[800] : Colors.blue[800],
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              TextFormField(
+                controller: _nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Customer Name',
+                  hintText: 'e.g., Ali Khan',
+                  prefixIcon: Icon(Icons.person),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter customer name';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16.0),
+              TextFormField(
+                controller: _phoneController,
+                decoration: const InputDecoration(
+                  labelText: 'Phone Number',
+                  hintText: 'e.g., 03XX-XXXXXXX',
+                  prefixIcon: Icon(Icons.phone),
+                ),
+                keyboardType: TextInputType.phone,
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter phone number';
+                  }
+                  // Basic phone number validation for Pakistan
+                  if (!RegExp(r'^(0?3[0-4]\d{1}[0-9]{7})$').hasMatch(value) &&
+                      !RegExp(r'^(\+923[0-4]\d{1}[0-9]{7})$').hasMatch(value)) {
+                    return 'Please enter a valid Pakistani phone number (e.g., 03XX-XXXXXXX)';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16.0),
+              TextFormField(
+                controller: _addressController,
+                decoration: const InputDecoration(
+                  labelText: 'Address',
+                  hintText: 'e.g., Street 1, DHA Phase 5, Lahore',
+                  prefixIcon: Icon(Icons.home),
+                ),
+                maxLines: 3,
+                minLines: 1,
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter address';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 24.0),
+              ElevatedButton.icon(
+                onPressed: _saveCustomer,
+                icon: Icon(_isEditing ? Icons.save : Icons.add),
+                label: Text(_isEditing ? 'Save Changes' : 'Add Customer'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  textStyle: const TextStyle(fontSize: 18),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\screens\add_edit_measurement_screen.dart
+DESCRIPTION:  a d
+==============================
+
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+//import '../models/customer.dart';
+import '../models/measurement.dart';
+import '../main.dart'; // Import AppState
+
+class AddEditMeasurementScreen extends StatefulWidget {
+  final Measurement? measurement;
+
+  const AddEditMeasurementScreen({Key? key, this.measurement}) : super(key: key);
+
+  @override
+  State<AddEditMeasurementScreen> createState() => _AddEditMeasurementScreenState();
+}
+
+class _AddEditMeasurementScreenState extends State<AddEditMeasurementScreen> {
+  final _formKey = GlobalKey<FormState>();
+  String? _selectedCustomerId;
+  String _selectedMeasurementType = 'Gents Qameez'; // Default type
+  final Map<String, TextEditingController> _measurementControllers = {};
+
+  bool get _isEditing => widget.measurement != null;
+
+  // Define default measurement fields for Gents and Ladies
+  final Map<String, List<String>> _measurementTemplates = {
+    'Gents Qameez': ['Length', 'Chest', 'Shoulder', 'Sleeve', 'Collar', 'Waist', 'Hip'],
+    'Gents Shalwar': ['Length', 'Hip', 'Bottom'],
+    'Ladies Shirt': ['Length', 'Chest', 'Shoulder', 'Sleeve', 'Neck', 'Waist', 'Hip'],
+    'Ladies Trouser': ['Length', 'Waist', 'Hip', 'Bottom'],
+    'Ladies Dupatta': ['Length', 'Width'],
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    if (_isEditing) {
+      _selectedCustomerId = widget.measurement!.customerId;
+      _selectedMeasurementType = widget.measurement!.type;
+      widget.measurement!.values.forEach((key, value) {
+        _measurementControllers[key] = TextEditingController(text: value.toString());
+      });
+    } else {
+      // Initialize controllers for the default type when adding
+      _measurementTemplates[_selectedMeasurementType]?.forEach((field) {
+        _measurementControllers[field] = TextEditingController();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _measurementControllers.forEach((key, controller) => controller.dispose());
+    super.dispose();
+  }
+
+  void _updateMeasurementFields(String? newType) {
+    if (newType == null || newType == _selectedMeasurementType) return;
+
+    setState(() {
+      _selectedMeasurementType = newType;
+      _measurementControllers.clear(); // Clear old controllers
+      _measurementTemplates[_selectedMeasurementType]?.forEach((field) {
+        _measurementControllers[field] = TextEditingController(); // Create new ones
+      });
+    });
+  }
+
+  Future<void> _saveMeasurement() async {
+    if (_formKey.currentState!.validate()) {
+      final appState = Provider.of<AppState>(context, listen: false);
+      _formKey.currentState!.save();
+
+      final Map<String, double> values = {};
+      _measurementControllers.forEach((field, controller) {
+        values[field] = double.tryParse(controller.text) ?? 0.0;
+      });
+
+      if (_isEditing) {
+        widget.measurement!.customerId = _selectedCustomerId!;
+        widget.measurement!.type = _selectedMeasurementType;
+        widget.measurement!.values = values;
+        await appState.updateMeasurement(widget.measurement!);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Measurement updated for ${appState.getCustomerById(_selectedCustomerId!)?.name ?? ''}!')),
+        );
+      } else {
+        final newMeasurement = Measurement(
+          customerId: _selectedCustomerId!,
+          type: _selectedMeasurementType,
+          values: values,
+        );
+        try {
+          await appState.addMeasurement(newMeasurement);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Measurement added for ${appState.getCustomerById(_selectedCustomerId!)?.name ?? ''}!')),
+          );
+        } catch (e) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(e.toString().replaceAll('Exception: ', ''))),
+          );
+          return;
+        }
+      }
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = Provider.of<AppState>(context);
+    final customers = appState.customers;
+
+    // Ensure a customer is selected if not editing and there are customers
+    if (!_isEditing && _selectedCustomerId == null && customers.isNotEmpty) {
+      _selectedCustomerId = customers.first.key.toString();
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(_isEditing ? 'Edit Measurement' : 'Add Measurement'),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              if (!_isEditing && !appState.isPremiumUser)
+                Card(
+                  margin: const EdgeInsets.only(bottom: 16.0),
+                  color: appState.measurementCount >= AppState.maxFreeMeasurements ? Colors.red[50] : Colors.blue[50],
+                  child: Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: Text(
+                      appState.measurementLimitMessage,
+                      style: TextStyle(
+                        color: appState.measurementCount >= AppState.maxFreeMeasurements ? Colors.red[800] : Colors.blue[800],
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              // Customer selection
+              DropdownButtonFormField<String>(
+                decoration: const InputDecoration(
+                  labelText: 'Select Customer',
+                  prefixIcon: Icon(Icons.person_outline),
+                ),
+                value: _selectedCustomerId,
+                hint: const Text('Choose a customer'),
+                items: customers.map((customer) {
+                  return DropdownMenuItem<String>(
+                    value: customer.key.toString(),
+                    child: Text(customer.name),
+                  );
+                }).toList(),
+                onChanged: (newValue) {
+                  setState(() {
+                    _selectedCustomerId = newValue;
+                  });
+                },
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please select a customer';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16.0),
+              // Measurement type selection
+              DropdownButtonFormField<String>(
+                decoration: const InputDecoration(
+                  labelText: 'Measurement Type',
+                  prefixIcon: Icon(Icons.category),
+                ),
+                value: _selectedMeasurementType,
+                items: _measurementTemplates.keys.map((type) {
+                  return DropdownMenuItem<String>(
+                    value: type,
+                    child: Text(type),
+                  );
+                }).toList(),
+                onChanged: _updateMeasurementFields,
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please select a measurement type';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 24.0),
+              Text(
+                'Enter Measurements (in inches)',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Theme.of(context).primaryColor),
+              ),
+              const SizedBox(height: 16.0),
+              // Dynamic measurement fields based on selected type
+              ...(_measurementTemplates[_selectedMeasurementType] ?? []).map((field) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12.0),
+                  child: TextFormField(
+                    controller: _measurementControllers[field],
+                    decoration: InputDecoration(
+                      labelText: field,
+                      hintText: 'e.g., 20.5',
+                      prefixIcon: const Icon(Icons.straighten),
+                      suffixText: 'inches',
+                    ),
+                    keyboardType: TextInputType.numberWithOptions(decimal: true),
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Please enter $field';
+                      }
+                      if (double.tryParse(value) == null) {
+                        return 'Please enter a valid number';
+                      }
+                      return null;
+                    },
+                  ),
+                );
+              }).toList(),
+              const SizedBox(height: 24.0),
+              ElevatedButton.icon(
+                onPressed: _saveMeasurement,
+                icon: Icon(_isEditing ? Icons.save : Icons.add),
+                label: Text(_isEditing ? 'Save Measurement' : 'Add Measurement'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  textStyle: const TextStyle(fontSize: 18),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\screens\add_edit_order_screen.dart
+DESCRIPTION:  a d
+==============================
+
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+// import '../models/customer.dart';
+// import '../models/measurement.dart';
+import '../models/order.dart';
+import '../main.dart'; // Import AppState
+
+class AddEditOrderScreen extends StatefulWidget {
+  final Order? order;
+
+  const AddEditOrderScreen({Key? key, this.order}) : super(key: key);
+
+  @override
+  State<AddEditOrderScreen> createState() => _AddEditOrderScreenState();
+}
+
+class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
+  final _formKey = GlobalKey<FormState>();
+  String? _selectedCustomerId;
+  String? _selectedMeasurementId;
+  DateTime _selectedDeliveryDate = DateTime.now();
+  String _selectedStatus = 'Cutting';
+
+  final TextEditingController _totalPriceController = TextEditingController();
+  final TextEditingController _advancePaymentController = TextEditingController();
+  final TextEditingController _remainingPaymentController = TextEditingController();
+  final TextEditingController _trackingNumberController = TextEditingController(); // NEW: Tracking number controller
+
+  final List<String> _orderStatuses = ['Cutting', 'Stitching', 'Ready', 'Delivered'];
+
+  bool get _isEditing => widget.order != null;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_isEditing) {
+      _selectedCustomerId = widget.order!.customerId;
+      _selectedMeasurementId = widget.order!.measurementId;
+      _selectedDeliveryDate = widget.order!.deliveryDate;
+      _selectedStatus = widget.order!.status;
+      _totalPriceController.text = widget.order!.totalPrice.toStringAsFixed(2);
+      _advancePaymentController.text = widget.order!.advancePayment.toStringAsFixed(2);
+      _remainingPaymentController.text = widget.order!.remainingPayment.toStringAsFixed(2);
+      _trackingNumberController.text = widget.order!.trackingNumber ?? ''; // NEW: Initialize tracking number
+    } else {
+      _totalPriceController.addListener(_updateRemainingPayment);
+      _advancePaymentController.addListener(_updateRemainingPayment);
+    }
+  }
+
+  @override
+  void dispose() {
+    _totalPriceController.removeListener(_updateRemainingPayment);
+    _advancePaymentController.removeListener(_updateRemainingPayment);
+    _totalPriceController.dispose();
+    _advancePaymentController.dispose();
+    _remainingPaymentController.dispose();
+    _trackingNumberController.dispose(); // NEW: Dispose tracking number controller
+    super.dispose();
+  }
+
+  void _updateRemainingPayment() {
+    final total = double.tryParse(_totalPriceController.text) ?? 0.0;
+    final advance = double.tryParse(_advancePaymentController.text) ?? 0.0;
+    setState(() {
+      _remainingPaymentController.text = (total - advance).toStringAsFixed(2);
+    });
+  }
+
+  Future<void> _selectDate(BuildContext context) async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDeliveryDate,
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 365 * 2)), // 2 years from now
+    );
+    if (picked != null && picked != _selectedDeliveryDate) {
+      setState(() {
+        _selectedDeliveryDate = picked;
+      });
+    }
+  }
+
+  Future<void> _saveOrder() async {
+    if (_formKey.currentState!.validate()) {
+      final appState = Provider.of<AppState>(context, listen: false);
+      _formKey.currentState!.save();
+
+      final totalPrice = double.tryParse(_totalPriceController.text) ?? 0.0;
+      final advancePayment = double.tryParse(_advancePaymentController.text) ?? 0.0;
+      final remainingPayment = double.tryParse(_remainingPaymentController.text) ?? 0.0;
+      final trackingNumber = _trackingNumberController.text.trim().isEmpty ? null : _trackingNumberController.text.trim(); // NEW
+
+      if (_isEditing) {
+        widget.order!.customerId = _selectedCustomerId!;
+        widget.order!.measurementId = _selectedMeasurementId!;
+        widget.order!.deliveryDate = _selectedDeliveryDate;
+        widget.order!.status = _selectedStatus;
+        widget.order!.totalPrice = totalPrice;
+        widget.order!.advancePayment = advancePayment;
+        widget.order!.remainingPayment = remainingPayment;
+        widget.order!.trackingNumber = trackingNumber; // NEW: Update tracking number
+        await appState.updateOrder(widget.order!);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Order updated for ${appState.getCustomerById(_selectedCustomerId!)?.name ?? ''}!')),
+        );
+      } else {
+        final newOrder = Order(
+          customerId: _selectedCustomerId!,
+          measurementId: _selectedMeasurementId!,
+          deliveryDate: _selectedDeliveryDate,
+          status: _selectedStatus,
+          totalPrice: totalPrice,
+          advancePayment: advancePayment,
+          remainingPayment: remainingPayment,
+          trackingNumber: trackingNumber, // NEW: Add tracking number
+        );
+        try {
+          await appState.addOrder(newOrder);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Order added for ${appState.getCustomerById(_selectedCustomerId!)?.name ?? ''}!')),
+          );
+        } catch (e) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(e.toString().replaceAll('Exception: ', ''))),
+          );
+          return;
+        }
+      }
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = Provider.of<AppState>(context);
+    final customers = appState.customers;
+    final measurements = appState.measurements;
+
+    final customerMeasurements = _selectedCustomerId != null
+        ? measurements.where((m) => m.customerId == _selectedCustomerId).toList()
+        : [];
+
+    if (!_isEditing && _selectedCustomerId == null && customers.isNotEmpty) {
+      _selectedCustomerId = customers.first.key.toString();
+    }
+    if (!_isEditing && _selectedMeasurementId == null && customerMeasurements.isNotEmpty) {
+      _selectedMeasurementId = customerMeasurements.first.key.toString(); // ERROR FIX: Access first item in list
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(_isEditing ? 'Edit Order' : 'Add Order'),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              if (!_isEditing && !appState.isPremiumUser)
+                Card(
+                  margin: const EdgeInsets.only(bottom: 16.0),
+                  color: appState.orderCount >= AppState.maxFreeOrders ? Colors.red[50] : Colors.blue[50],
+                  child: Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: Text(
+                      appState.orderLimitMessage,
+                      style: TextStyle(
+                        color: appState.orderCount >= AppState.maxFreeOrders ? Colors.red[800] : Colors.blue[800],
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              // Customer Selection
+              DropdownButtonFormField<String>(
+                decoration: const InputDecoration(
+                  labelText: 'Select Customer',
+                  prefixIcon: Icon(Icons.person_outline),
+                ),
+                value: _selectedCustomerId,
+                hint: const Text('Choose a customer'),
+                items: customers.map((customer) {
+                  return DropdownMenuItem<String>(
+                    value: customer.key.toString(),
+                    child: Text(customer.name),
+                  );
+                }).toList(),
+                onChanged: (newValue) {
+                  setState(() {
+                    _selectedCustomerId = newValue;
+                    _selectedMeasurementId = null;
+                  });
+                },
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please select a customer';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16.0),
+              // Measurement Selection (filtered by customer)
+              DropdownButtonFormField<String>(
+                decoration: const InputDecoration(
+                  labelText: 'Select Measurement',
+                  prefixIcon: Icon(Icons.straighten),
+                ),
+                value: _selectedMeasurementId,
+                hint: Text(
+                  _selectedCustomerId == null
+                      ? 'Select a customer first'
+                      : (customerMeasurements.isEmpty ? 'No measurements for this customer' : 'Choose a measurement'),
+                ),
+                items: customerMeasurements.map((measurement) {
+                  return DropdownMenuItem<String>(
+                    value: measurement.key.toString(),
+                    child: Text('${measurement.type} (ID: ${measurement.key})'),
+                  );
+                }).toList(),
+                onChanged: customerMeasurements.isEmpty ? null : (newValue) {
+                  setState(() {
+                    _selectedMeasurementId = newValue;
+                  });
+                },
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please select a measurement';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16.0),
+              // Delivery Date Picker
+              ListTile(
+                title: Text(
+                  'Delivery Date: ${DateFormat('dd MMM yyyy').format(_selectedDeliveryDate)}',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                trailing: const Icon(Icons.calendar_today),
+                onTap: () => _selectDate(context),
+                contentPadding: EdgeInsets.zero,
+              ),
+              const SizedBox(height: 16.0),
+              // Order Status Dropdown
+              DropdownButtonFormField<String>(
+                decoration: const InputDecoration(
+                  labelText: 'Order Status',
+                  prefixIcon: Icon(Icons.info_outline),
+                ),
+                value: _selectedStatus,
+                items: _orderStatuses.map((status) {
+                  return DropdownMenuItem<String>(
+                    value: status,
+                    child: Text(status),
+                  );
+                }).toList(),
+                onChanged: (newValue) {
+                  setState(() {
+                    _selectedStatus = newValue!;
+                  });
+                },
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please select an order status';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16.0),
+              // NEW: Tracking Number Field
+              TextFormField(
+                controller: _trackingNumberController,
+                decoration: const InputDecoration(
+                  labelText: 'Tracking Number (Optional)',
+                  hintText: 'e.g., ORD-001-A',
+                  prefixIcon: Icon(Icons.numbers),
+                ),
+              ),
+              const SizedBox(height: 16.0),
+              // Price Fields
+              TextFormField(
+                controller: _totalPriceController,
+                decoration: const InputDecoration(
+                  labelText: 'Total Price (PKR)',
+                  prefixIcon: Icon(Icons.payments),
+                ),
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter total price';
+                  }
+                  if (double.tryParse(value) == null) {
+                    return 'Please enter a valid number';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16.0),
+              TextFormField(
+                controller: _advancePaymentController,
+                decoration: const InputDecoration(
+                  labelText: 'Advance Payment (PKR)',
+                  prefixIcon: Icon(Icons.arrow_downward),
+                ),
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter advance payment';
+                  }
+                  if (double.tryParse(value) == null) {
+                    return 'Please enter a valid number';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16.0),
+              TextFormField(
+                controller: _remainingPaymentController,
+                decoration: const InputDecoration(
+                  labelText: 'Remaining Payment (PKR)',
+                  prefixIcon: Icon(Icons.account_balance_wallet),
+                ),
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
+                readOnly: true,
+                enabled: false,
+                style: TextStyle(color: Colors.grey[700]),
+              ),
+              const SizedBox(height: 24.0),
+              ElevatedButton.icon(
+                onPressed: _saveOrder,
+                icon: Icon(_isEditing ? Icons.save : Icons.add),
+                label: Text(_isEditing ? 'Save Order' : 'Add Order'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  textStyle: const TextStyle(fontSize: 18),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\screens\customer_detail_screen.dart
+DESCRIPTION:  c u
+==============================
+
+import 'package:flutter/material.dart';
+import '../models/customer.dart'; // Import Customer model
+
+class CustomerDetailScreen extends StatelessWidget {
+  final Customer customer;
+
+  const CustomerDetailScreen({Key? key, required this.customer}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(customer.name),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Customer Details',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 20),
+            _buildDetailRow(context, Icons.person, 'Name:', customer.name),
+            _buildDetailRow(context, Icons.phone, 'Phone:', customer.phone),
+            _buildDetailRow(context, Icons.home, 'Address:', customer.address),
+            const SizedBox(height: 30),
+            Text(
+              'No orders or measurements yet.', // Placeholder
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontStyle: FontStyle.italic),
+            ),
+            // TODO: In future phases, integrate tabs or sections for Orders and Measurements
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDetailRow(BuildContext context, IconData icon, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: Theme.of(context).primaryColor, size: 24),
+          const SizedBox(width: 15),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
+                ),
+                Text(
+                  value,
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\screens\customer_list_screen.dart
+DESCRIPTION:  c u
+==============================
+
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../models/customer.dart';
+import '../main.dart'; // Import AppState
+import 'add_edit_customer_screen.dart';
+
+class CustomerListScreen extends StatefulWidget { // Changed to StatefulWidget for search bar
+  const CustomerListScreen({Key? key}) : super(key: key);
+
+  @override
+  State<CustomerListScreen> createState() => _CustomerListScreenState();
+}
+
+class _CustomerListScreenState extends State<CustomerListScreen> {
+  final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(() {
+      Provider.of<AppState>(context, listen: false).setCustomerSearchQuery(_searchController.text);
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _showUpgradePrompt(BuildContext context, String message) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Limit Reached!'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              // TODO: Navigate to Subscription/Upgrade screen (Phase 4)
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Taking you to upgrade options...')),
+              );
+              Provider.of<AppState>(context, listen: false).upgradeToPremium(); // For testing
+            },
+            child: const Text('Upgrade Now'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Customers'),
+        bottom: PreferredSize( // Add search bar below AppBar
+          preferredSize: const Size.fromHeight(kToolbarHeight),
+          child: Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: 'Search customers by name, phone, address...',
+                prefixIcon: const Icon(Icons.search, color: Colors.white70),
+                suffixIcon: _searchController.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, color: Colors.white70),
+                        onPressed: () {
+                          _searchController.clear();
+                          Provider.of<AppState>(context, listen: false).setCustomerSearchQuery('');
+                        },
+                      )
+                    : null,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(30),
+                  borderSide: BorderSide.none,
+                ),
+                filled: true,
+                fillColor: Colors.white.withOpacity(0.2),
+                contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 20),
+                hintStyle: const TextStyle(color: Colors.white70),
+              ),
+              style: const TextStyle(color: Colors.white),
+              cursorColor: Colors.white,
+            ),
+          ),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              Provider.of<AppState>(context, listen: false).refreshCustomers();
+            },
+          ),
+        ],
+      ),
+      body: Consumer<AppState>(
+        builder: (context, appState, child) {
+          // --- Trial/Subscription Banner ---
+          Widget? trialBanner;
+          if (!appState.isPremiumUser) {
+            if (appState.isTrialActive) {
+              trialBanner = Card(
+                margin: const EdgeInsets.all(8.0),
+                color: Colors.amber[100],
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: Column(
+                    children: [
+                      Text(
+                        'Free Trial: ${appState.daysLeftInTrial} days left!',
+                        style: TextStyle(
+                          color: Theme.of(context).primaryColorDark,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      ElevatedButton(
+                        onPressed: () {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Navigate to Subscription Page!')),
+                          );
+                          appState.upgradeToPremium(); // For testing
+                        },
+                        child: const Text('Upgrade Now'),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            } else if (appState.hasUsedTrial) {
+              trialBanner = Card(
+                margin: const EdgeInsets.all(8.0),
+                color: Colors.red[100],
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: Column(
+                    children: [
+                      Text(
+                        'Your Free Trial Has Expired!',
+                        style: TextStyle(
+                          color: Colors.red[800],
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      ElevatedButton(
+                        onPressed: () {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Navigate to Subscription Page!')),
+                          );
+                          appState.upgradeToPremium(); // For testing
+                        },
+                        child: const Text('Upgrade to continue'),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+
+          if (appState.customers.isEmpty && trialBanner == null) {
+            return Center(
+              child: Text(
+                _searchController.text.isEmpty
+                    ? 'No customers added yet. Click + to add your first customer!'
+                    : 'No customers found matching "${_searchController.text}"',
+                style: const TextStyle(fontSize: 16, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+            );
+          }
+
+          return Column(
+            children: [
+              if (trialBanner != null) trialBanner,
+              Expanded(
+                child: ListView.builder(
+                  itemCount: appState.customers.length,
+                  itemBuilder: (context, index) {
+                    final customer = appState.customers[index];
+                    return CustomerCard(
+                      customer: customer,
+                      onEdit: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (context) => AddEditCustomerScreen(customer: customer),
+                          ),
+                        );
+                      },
+                      onDelete: () async {
+                        final confirmed = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text('Delete Customer?'),
+                            content: Text('Are you sure you want to delete ${customer.name}? This will also delete associated orders and measurements.'),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.of(ctx).pop(false),
+                                child: const Text('Cancel'),
+                              ),
+                              TextButton(
+                                onPressed: () => Navigator.of(ctx).pop(true),
+                                style: TextButton.styleFrom(foregroundColor: Colors.red),
+                                child: const Text('Delete'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirmed == true) {
+                          await appState.deleteCustomer(customer);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('${customer.name} deleted!')),
+                          );
+                        }
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+      floatingActionButton: Consumer<AppState>(
+        builder: (context, appState, child) {
+          return FloatingActionButton.extended(
+            onPressed: () async {
+              if (!appState.canAddMoreCustomers) {
+                if (!appState.isTrialActive && !appState.hasUsedTrial) {
+                  await appState.startTrial();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('7-day free trial started!')),
+                  );
+                  if (!appState.canAddMoreCustomers) {
+                    _showUpgradePrompt(context, appState.customerLimitMessage);
+                  } else {
+                     Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => AddEditCustomerScreen(),
+                      ),
+                    );
+                  }
+                } else {
+                   _showUpgradePrompt(context, appState.customerLimitMessage);
+                }
+              } else {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => AddEditCustomerScreen(),
+                  ),
+                );
+              }
+            },
+            label: const Text('Add Customer'),
+            icon: const Icon(Icons.person_add),
+            backgroundColor: Theme.of(context).primaryColor,
+            foregroundColor: Colors.white,
+          );
+        },
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+    );
+  }
+}
+
+// --- Custom Widget for Customer List Item ---
+class CustomerCard extends StatelessWidget {
+  final Customer customer;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  const CustomerCard({
+    Key? key,
+    required this.customer,
+    required this.onEdit,
+    required this.onDelete,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      // Margin already defined in ThemeData.cardTheme, no need for explicit here if consistent.
+      // margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      child: Padding(
+        padding: const EdgeInsets.all(8.0),
+        child: Row(
+          children: [
+            CircleAvatar(
+              backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
+              child: Icon(Icons.person, color: Theme.of(context).primaryColor),
+            ),
+            const SizedBox(width: 15),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    customer.name,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Phone: ${customer.phone}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  Text(
+                    'Address: ${customer.address}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              icon: Icon(Icons.edit, color: Colors.grey[600]),
+              onPressed: onEdit,
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete, color: Colors.red),
+              onPressed: onDelete,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\screens\main_home_screen.dart
+DESCRIPTION:  m a
+==============================
+
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../main.dart'; // For AppState and trial info
+import 'report_screen.dart'; // NEW: Import the ReportScreen
+
+import 'customer_list_screen.dart';
+// Import new screens
+import 'measurement_list_screen.dart';
+import 'order_list_screen.dart';
+
+class MainHomeScreen extends StatefulWidget {
+  const MainHomeScreen({Key? key}) : super(key: key);
+
+  @override
+  State<MainHomeScreen> createState() => _MainHomeScreenState();
+}
+
+class _MainHomeScreenState extends State<MainHomeScreen> {
+  int _selectedIndex = 0; // Index for the selected tab
+
+  static const List<Widget> _widgetOptions = <Widget>[
+    CustomerListScreen(),
+    OrderListScreen(),
+    MeasurementListScreen(),
+    ReportScreen(), // NEW: Use the ReportScreen here
+    // Placeholder for future Reports screen or Settings
+  ];
+
+  void _onItemTapped(int index) {
+    setState(() {
+      _selectedIndex = index;
+    });
+  }
+
+  // Reusable widget for showing trial/upgrade banner
+  Widget _buildTrialBanner(BuildContext context, AppState appState) {
+    if (appState.isPremiumUser) {
+      return const SizedBox.shrink(); // Don't show if premium
+    }
+
+    String message;
+    Color backgroundColor;
+    Color textColor;
+    VoidCallback? onUpgradeTap;
+
+    if (appState.isTrialActive) {
+      message = 'Free Trial: ${appState.daysLeftInTrial} days left!';
+      backgroundColor = Colors.amber[100]!;
+      textColor = Theme.of(context).primaryColorDark;
+      onUpgradeTap = () {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Navigate to Subscription Page!')),
+        );
+        appState.upgradeToPremium(); // For testing
+      };
+    } else if (appState.hasUsedTrial) {
+      message = 'Trial Expired! Upgrade to unlock full features.';
+      backgroundColor = Colors.red[100]!;
+      textColor = Colors.red[800]!;
+      onUpgradeTap = () {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Navigate to Subscription Page!')),
+        );
+        appState.upgradeToPremium(); // For testing
+      };
+    } else {
+      return const SizedBox.shrink(); // Don't show if trial not started
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
+      color: backgroundColor,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(color: textColor, fontWeight: FontWeight.bold),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (onUpgradeTap != null)
+            TextButton(
+              onPressed: onUpgradeTap,
+              style: TextButton.styleFrom(
+                backgroundColor: Theme.of(context).primaryColor,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                minimumSize: Size.zero, // Important for small padding
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('Upgrade'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = Provider.of<AppState>(context); // Listen to AppState for banner updates
+
+    return Scaffold(
+      body: Column(
+        children: [
+          _buildTrialBanner(context, appState), // Show banner at the top
+          Expanded(
+            child: _widgetOptions.elementAt(_selectedIndex), // Display selected screen
+          ),
+        ],
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        items: const <BottomNavigationBarItem>[
+          BottomNavigationBarItem(
+            icon: Icon(Icons.people),
+            label: 'Customers',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.receipt_long),
+            label: 'Orders',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.straighten),
+            label: 'Measurements',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.bar_chart),
+            label: 'Reports', // Placeholder
+          ),
+        ],
+        currentIndex: _selectedIndex,
+        selectedItemColor: Theme.of(context).primaryColor,
+        unselectedItemColor: Colors.grey,
+        onTap: _onItemTapped,
+        type: BottomNavigationBarType.fixed, // Shows all labels
+        backgroundColor: Colors.white,
+        elevation: 8,
+      ),
+    );
+  }
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\screens\measurement_list_screen.dart
+DESCRIPTION:  m e
+==============================
+
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../models/measurement.dart';
+import '../main.dart'; // Import AppState
+import 'add_edit_measurement_screen.dart';
+// import '../models/customer.dart'; // To get customer name
+
+class MeasurementListScreen extends StatefulWidget { // Changed to StatefulWidget for search bar
+  const MeasurementListScreen({Key? key}) : super(key: key);
+
+  @override
+  State<MeasurementListScreen> createState() => _MeasurementListScreenState();
+}
+
+class _MeasurementListScreenState extends State<MeasurementListScreen> {
+  final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(() {
+      Provider.of<AppState>(context, listen: false).setMeasurementSearchQuery(_searchController.text);
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _showUpgradePrompt(BuildContext context, String message) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Limit Reached!'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              // TODO: Navigate to Subscription/Upgrade screen (Phase 4)
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Taking you to upgrade options...')),
+              );
+              Provider.of<AppState>(context, listen: false).upgradeToPremium(); // For testing
+            },
+            child: const Text('Upgrade Now'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Measurements'),
+        bottom: PreferredSize( // Add search bar below AppBar
+          preferredSize: const Size.fromHeight(kToolbarHeight),
+          child: Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: 'Search measurements by customer, type, ID...',
+                prefixIcon: const Icon(Icons.search, color: Colors.white70),
+                suffixIcon: _searchController.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, color: Colors.white70),
+                        onPressed: () {
+                          _searchController.clear();
+                          Provider.of<AppState>(context, listen: false).setMeasurementSearchQuery('');
+                        },
+                      )
+                    : null,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(30),
+                  borderSide: BorderSide.none,
+                ),
+                filled: true,
+                fillColor: Colors.white.withOpacity(0.2),
+                contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 20),
+                hintStyle: const TextStyle(color: Colors.white70),
+              ),
+              style: const TextStyle(color: Colors.white),
+              cursorColor: Colors.white,
+            ),
+          ),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              Provider.of<AppState>(context, listen: false).refreshMeasurements();
+            },
+          ),
+        ],
+      ),
+      body: Consumer<AppState>(
+        builder: (context, appState, child) {
+          if (appState.measurements.isEmpty) { // Check filtered list
+            return Center(
+              child: Text(
+                _searchController.text.isEmpty
+                    ? 'No measurements added yet. Click + to add your first measurement!'
+                    : 'No measurements found matching "${_searchController.text}"',
+                style: const TextStyle(fontSize: 16, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+            );
+          }
+
+          return ListView.builder(
+            itemCount: appState.measurements.length,
+            itemBuilder: (context, index) {
+              final measurement = appState.measurements[index];
+              final customer = appState.getCustomerById(measurement.customerId);
+              return MeasurementCard(
+                measurement: measurement,
+                customerName: customer?.name ?? 'Unknown Customer',
+                onEdit: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => AddEditMeasurementScreen(measurement: measurement),
+                    ),
+                  );
+                },
+                onDelete: () async {
+                  final confirmed = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('Delete Measurement?'),
+                      content: Text('Are you sure you want to delete this measurement for ${customer?.name ?? 'Unknown Customer'}?'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(ctx).pop(false),
+                          child: const Text('Cancel'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.of(ctx).pop(true),
+                          style: TextButton.styleFrom(foregroundColor: Colors.red),
+                          child: const Text('Delete'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (confirmed == true) {
+                    await appState.deleteMeasurement(measurement);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Measurement deleted!')),
+                    );
+                  }
+                },
+              );
+            },
+          );
+        },
+      ),
+      floatingActionButton: Consumer<AppState>(
+        builder: (context, appState, child) {
+          return FloatingActionButton.extended(
+            onPressed: () async {
+              if (!appState.canAddMoreMeasurements) {
+                if (!appState.isTrialActive && !appState.hasUsedTrial) {
+                  await appState.startTrial();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('7-day free trial started!')),
+                  );
+                  if (!appState.canAddMoreMeasurements) {
+                    _showUpgradePrompt(context, appState.measurementLimitMessage);
+                  } else {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => AddEditMeasurementScreen(),
+                      ),
+                    );
+                  }
+                } else {
+                   _showUpgradePrompt(context, appState.measurementLimitMessage);
+                }
+              } else {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => AddEditMeasurementScreen(),
+                  ),
+                );
+              }
+            },
+            label: const Text('Add Measurement'),
+            icon: const Icon(Icons.add),
+            backgroundColor: Theme.of(context).primaryColor,
+            foregroundColor: Colors.white,
+          );
+        },
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+    );
+  }
+}
+
+// --- Custom Widget for Measurement List Item ---
+class MeasurementCard extends StatelessWidget {
+  final Measurement measurement;
+  final String customerName;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  const MeasurementCard({
+    Key? key,
+    required this.measurement,
+    required this.customerName,
+    required this.onEdit,
+    required this.onDelete,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: ExpansionTile(
+        leading: CircleAvatar(
+          backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
+          child: Icon(Icons.straighten, color: Theme.of(context).primaryColor),
+        ),
+        title: Text(
+          '${measurement.type} for $customerName',
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+        ),
+        subtitle: Text('ID: ${measurement.key}', style: Theme.of(context).textTheme.bodySmall),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: Icon(Icons.edit, color: Colors.grey[600]),
+              onPressed: onEdit,
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete, color: Colors.red),
+              onPressed: onDelete,
+            ),
+          ],
+        ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: measurement.values.entries.map((entry) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2.0),
+                  child: Text(
+                    '${entry.key}: ${entry.value} inches',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\screens\order_list_screen.dart
+DESCRIPTION:  o r
+==============================
+
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import '../models/order.dart';
+import '../main.dart'; // Import AppState
+import 'add_edit_order_screen.dart';
+//import '../models/customer.dart'; // To get customer name - not directly used here
+
+class OrderListScreen extends StatefulWidget { // Changed to StatefulWidget for search bar
+  const OrderListScreen({Key? key}) : super(key: key);
+
+  @override
+  State<OrderListScreen> createState() => _OrderListScreenState();
+}
+
+class _OrderListScreenState extends State<OrderListScreen> {
+  final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(() {
+      Provider.of<AppState>(context, listen: false).setOrderSearchQuery(_searchController.text);
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  // Helper for status colors
+  Color _getStatusColor(String status) {
+    switch (status) {
+      case 'Cutting': return Colors.blue.shade200;
+      case 'Stitching': return Colors.orange.shade200;
+      case 'Ready': return Colors.green.shade200;
+      case 'Delivered': return Colors.grey.shade400;
+      default: return Colors.grey.shade100;
+    }
+  }
+
+  void _showUpgradePrompt(BuildContext context, String message) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Limit Reached!'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              // TODO: Navigate to Subscription/Upgrade screen (Phase 4)
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Taking you to upgrade options...')),
+              );
+              Provider.of<AppState>(context, listen: false).upgradeToPremium(); // For testing
+            },
+            child: const Text('Upgrade Now'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) { // Corrected build method signature
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Orders'),
+        bottom: PreferredSize( // Add search bar below AppBar
+          preferredSize: const Size.fromHeight(kToolbarHeight),
+          child: Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: 'Search orders by customer, tracking #, status...',
+                prefixIcon: const Icon(Icons.search, color: Colors.white70),
+                suffixIcon: _searchController.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, color: Colors.white70),
+                        onPressed: () {
+                          _searchController.clear();
+                          Provider.of<AppState>(context, listen: false).setOrderSearchQuery('');
+                        },
+                      )
+                    : null,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(30),
+                  borderSide: BorderSide.none,
+                ),
+                filled: true,
+                fillColor: Colors.white.withOpacity(0.2),
+                contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 20),
+                hintStyle: const TextStyle(color: Colors.white70),
+              ),
+              style: const TextStyle(color: Colors.white),
+              cursorColor: Colors.white,
+            ),
+          ),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              Provider.of<AppState>(context, listen: false).refreshOrders();
+            },
+          ),
+        ],
+      ),
+      body: Consumer<AppState>(
+        builder: (context, appState, child) {
+          if (appState.orders.isEmpty) { // Check filtered list
+            return Center(
+              child: Text(
+                _searchController.text.isEmpty
+                    ? 'No orders added yet. Click + to add your first order!'
+                    : 'No orders found matching "${_searchController.text}"',
+                style: const TextStyle(fontSize: 16, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+            );
+          }
+
+          return ListView.builder(
+            itemCount: appState.orders.length,
+            itemBuilder: (context, index) {
+              final order = appState.orders[index];
+              final customer = appState.getCustomerById(order.customerId);
+              return OrderCard(
+                order: order,
+                customerName: customer?.name ?? 'Unknown Customer',
+                statusColor: _getStatusColor(order.status),
+                onEdit: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => AddEditOrderScreen(order: order),
+                    ),
+                  );
+                },
+                onDelete: () async {
+                  final confirmed = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('Delete Order?'),
+                      content: Text('Are you sure you want to delete this order for ${customer?.name ?? 'Unknown Customer'}?'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(ctx).pop(false),
+                          child: const Text('Cancel'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.of(ctx).pop(true),
+                          style: TextButton.styleFrom(foregroundColor: Colors.red),
+                          child: const Text('Delete'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (confirmed == true) {
+                    await appState.deleteOrder(order);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Order deleted!')),
+                    );
+                  }
+                },
+              );
+            },
+          );
+        },
+      ),
+      floatingActionButton: Consumer<AppState>(
+        builder: (context, appState, child) {
+          return FloatingActionButton.extended(
+            onPressed: () async {
+              if (!appState.canAddMoreOrders) {
+                if (!appState.isTrialActive && !appState.hasUsedTrial) {
+                  await appState.startTrial();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('7-day free trial started!')),
+                  );
+                  if (!appState.canAddMoreOrders) {
+                    _showUpgradePrompt(context, appState.orderLimitMessage);
+                  } else {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => AddEditOrderScreen(),
+                      ),
+                    );
+                  }
+                } else {
+                   _showUpgradePrompt(context, appState.orderLimitMessage);
+                }
+              } else {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => AddEditOrderScreen(),
+                  ),
+                );
+              }
+            },
+            label: const Text('Add Order'),
+            icon: const Icon(Icons.add),
+            backgroundColor: Theme.of(context).primaryColor,
+            foregroundColor: Colors.white,
+          );
+        },
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+    );
+  }
+}
+
+// --- Custom Widget for Order List Item ---
+class OrderCard extends StatelessWidget {
+  final Order order;
+  final String customerName;
+  final Color statusColor;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  const OrderCard({
+    Key? key,
+    required this.order,
+    required this.customerName,
+    required this.statusColor,
+    required this.onEdit,
+    required this.onDelete,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    'Order for $customerName',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: statusColor,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  child: Text(
+                    order.status,
+                    style: TextStyle(
+                      color: Colors.grey[800],
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (order.trackingNumber != null && order.trackingNumber!.isNotEmpty) // NEW: Display tracking number
+              Padding(
+                padding: const EdgeInsets.only(top: 4.0),
+                child: Text(
+                  'Tracking #: ${order.trackingNumber}',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[700]),
+                ),
+              ),
+            const SizedBox(height: 8),
+            Text('Delivery Date: ${DateFormat('dd MMM yyyy').format(order.deliveryDate)}'),
+            Text('Total: PKR ${order.totalPrice.toStringAsFixed(2)}'),
+            Text('Advance: PKR ${order.advancePayment.toStringAsFixed(2)}'),
+            Text('Remaining: PKR ${order.remainingPayment.toStringAsFixed(2)}'),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.bottomRight,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.edit, color: Colors.grey[600]),
+                    onPressed: onEdit,
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    onPressed: onDelete,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+==============================
+FILE: D:\DarziApp\darzi_app\lib\screens\report_screen.dart
+DESCRIPTION:  r e
+==============================
+
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../main.dart'; // Import AppState
+import 'package:intl/intl.dart'; // For currency formatting
+
+class ReportScreen extends StatelessWidget {
+  const ReportScreen({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = Provider.of<AppState>(context);
+    final NumberFormat currencyFormatter = NumberFormat.currency(
+      locale: 'en_PK', // Pakistan Rupee locale
+      symbol: 'PKR ',
+      decimalDigits: 2,
+    );
+
+    // Get order status counts
+    final ordersByStatus = appState.ordersByStatus;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Reports'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              // Refreshing any of these will implicitly rebuild the reports as they rely on AppState
+              appState.refreshCustomers();
+              appState.refreshOrders();
+              appState.refreshMeasurements();
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Reports Refreshed!')),
+              );
+            },
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Overview',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            // Summary Cards
+            GridView.count(
+              crossAxisCount: 2,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(), // Disable scrolling for GridView
+              mainAxisSpacing: 10,
+              crossAxisSpacing: 10,
+              children: [
+                _buildSummaryCard(
+                  context,
+                  icon: Icons.people,
+                  label: 'Total Customers',
+                  value: appState.totalCustomers.toString(),
+                  color: Colors.blue.shade100,
+                ),
+                _buildSummaryCard(
+                  context,
+                  icon: Icons.receipt_long,
+                  label: 'Total Orders',
+                  value: appState.totalOrders.toString(),
+                  color: Colors.green.shade100,
+                ),
+                _buildSummaryCard(
+                  context,
+                  icon: Icons.straighten,
+                  label: 'Total Measurements',
+                  value: appState.totalMeasurements.toString(),
+                  color: Colors.purple.shade100,
+                ),
+                _buildSummaryCard(
+                  context,
+                  icon: Icons.attach_money,
+                  label: 'Average Order Value',
+                  value: currencyFormatter.format(appState.averageOrderValue),
+                  color: Colors.orange.shade100,
+                ),
+              ],
+            ),
+            const SizedBox(height: 30),
+            Text(
+              'Financial Summary',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  children: [
+                    _buildFinancialRow(
+                      context,
+                      label: 'Total Revenue (Delivered Orders)',
+                      value: currencyFormatter.format(appState.totalRevenue),
+                      icon: Icons.check_circle_outline,
+                      iconColor: Colors.green,
+                    ),
+                    const Divider(),
+                    _buildFinancialRow(
+                      context,
+                      label: 'Total Outstanding Payments',
+                      value: currencyFormatter.format(appState.totalOutstandingPayments),
+                      icon: Icons.pending_actions,
+                      iconColor: Colors.red,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 30),
+            Text(
+              'Orders by Status',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              child: ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: ordersByStatus.length,
+                itemBuilder: (context, index) {
+                  final status = ordersByStatus.keys.elementAt(index);
+                  final count = ordersByStatus[status]!;
+                  return ListTile(
+                    leading: Icon(_getStatusIcon(status), color: _getStatusColor(status)),
+                    title: Text('$status Orders'),
+                    trailing: Chip(
+                      label: Text(count.toString()),
+                      backgroundColor: _getStatusColor(status).withOpacity(0.2),
+                      labelStyle: TextStyle(color: _getStatusColor(status).darken(0.2)),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 50), // Extra space for FAB
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryCard(BuildContext context, {required IconData icon, required String label, required String value, required Color color}) {
+    return Card(
+      color: color,
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 36, color: Theme.of(context).primaryColorDark),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              value,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold, color: Theme.of(context).primaryColor),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFinancialRow(BuildContext context, {required String label, required String value, required IconData icon, required Color iconColor}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Row(
+        children: [
+          Icon(icon, color: iconColor),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+          Text(
+            value,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold, color: Theme.of(context).primaryColor),
+          ),
+        ],
+      ),
+    );
+  }
+
+  IconData _getStatusIcon(String status) {
+    switch (status) {
+      case 'Cutting': return Icons.cut;
+      case 'Stitching': return Icons.content_cut; // Or a sewing machine icon if available
+      case 'Ready': return Icons.check_circle;
+      case 'Delivered': return Icons.local_shipping;
+      default: return Icons.info_outline;
+    }
+  }
+
+  Color _getStatusColor(String status) {
+    switch (status) {
+      case 'Cutting': return Colors.blue;
+      case 'Stitching': return Colors.orange;
+      case 'Ready': return Colors.green;
+      case 'Delivered': return Colors.grey;
+      default: return Colors.grey;
+    }
+  }
+}
+
+// Extension to darken colors (useful for chip text)
+extension ColorBrightness on Color {
+  Color darken([double amount = .1]) {
+    assert(amount >= 0 && amount <= 1);
+    final hsl = HSLColor.fromColor(this);
+    final hslDark = hsl.withLightness((hsl.lightness - amount).clamp(0.0, 1.0));
+    return hslDark.toColor();
+  }
+}
+
+
+==============================
+FILE: D:\DarziApp\darzi_app\pubspec.yaml
+DESCRIPTION:  m a
+==============================
+
+name: darzi_app
+description: "A new Flutter project."
+# The following line prevents the package from being accidentally published to
+# pub.dev using `flutter pub publish`. This is preferred for private packages.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+
+# The following defines the version and build number for your application.
+# A version number is three numbers separated by dots, like 1.2.43
+# followed by an optional build number separated by a +.
+# Both the version and the builder number may be overridden in flutter
+# build by specifying --build-name and --build-number, respectively.
+# In Android, build-name is used as versionName while build-number used as versionCode.
+# Read more about Android versioning at https://developer.android.com/studio/publish/versioning
+# In iOS, build-name is used as CFBundleShortVersionString while build-number is used as CFBundleVersion.
+# Read more about iOS versioning at
+# https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
+# In Windows, build-name is used as the major, minor, and patch parts
+# of the product and file versions while build-number is used as the build suffix.
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.8
+
+# Dependencies specify other packages that your package needs in order to work.
+# To automatically upgrade your package dependencies to the latest versions
+# consider running `flutter pub upgrade --major-versions`. Alternatively,
+# dependencies can be manually updated by changing the version numbers below to
+# the latest version available on pub.dev. To see which dependencies have newer
+# versions available, run `flutter pub outdated`.
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # The following adds the Cupertino Icons font to your application.
+  # Use with the CupertinoIcons class for iOS style icons.
+  cupertino_icons: ^1.0.8
+  hive: ^2.2.3 # Or latest stable version from pub.dev
+  hive_flutter: ^1.1.0 # Or latest stable version from pub.dev
+  provider: ^6.0.5 # Or latest stable version from pub.dev
+  flutter_local_notifications: ^17.0.0
+  shared_preferences: ^2.1.1
+  in_app_purchase: 3.2.3 # Or latest stable version from pub.dev
+  intl: ^0.20.2 # Or latest stable version from pub.dev
+  hive_generator: ^2.0.1 # Or latest stable version from pub.dev
+  build_runner: ^2.4.8 # Or latest stable version from pub.dev
+  path_provider: ^2.0.0
+  # shared_preferences: ^2.0.0
+
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  # The "flutter_lints" package below contains a set of recommended lints to
+  # encourage good coding practices. The lint set provided by the package is
+  # activated in the `analysis_options.yaml` file located at the root of your
+  # package. See that file for information about deactivating specific lint
+  # rules and activating additional ones.
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: "^0.13.1" # Add this line (or latest version)
+
+# For information on the generic Dart part of this file, see the
+# following page: https://dart.dev/tools/pub/pubspec
+
+# The following section is specific to Flutter packages.
+flutter:
+
+  # The following line ensures that the Material Icons font is
+  # included with your application, so that you can use the icons in
+  # the material Icons class.
+  uses-material-design: true
+
+  # To add assets to your application, add an assets section, like this:
+  # assets:
+  #   - images/a_dot_burr.jpeg
+  #   - images/a_dot_ham.jpeg
+
+  # An image asset can refer to one or more resolution-specific "variants", see
+  # https://flutter.dev/to/resolution-aware-images
+
+  # For details regarding adding assets from package dependencies, see
+  # https://flutter.dev/to/asset-from-package
+
+  # To add custom fonts to your application, add a fonts section here,
+  # in this "flutter" section. Each entry in this list should have a
+  # "family" key with the font family name, and a "fonts" key with a
+  # list giving the asset and other descriptors for the font. For
+  # example:
+  # fonts:
+  #   - family: Schyler
+  #     fonts:
+  #       - asset: fonts/Schyler-Regular.ttf
+  #       - asset: fonts/Schyler-Italic.ttf
+  #         style: italic
+  #   - family: Trajan Pro
+  #     fonts:
+  #       - asset: fonts/TrajanPro.ttf
+  #       - asset: fonts/TrajanPro_Bold.ttf
+  #         weight: 700
+  #
+  # For details regarding fonts from package dependencies,
+  # see https://flutter.dev/to/font-from-package
+flutter_launcher_icons:
+  android: "true"
+  ios: "true"
+  image_path: "assets/app_icon.png" # <--- IMPORTANT: Update this path!
+  min_sdk_android: 21 # Set to your min Android SDK version
+  # Optional: platform specific icons (if you need different icons for Android/iOS)
+  # android_gravity: "center"
+  # adaptive_icon_background: "#FFFFFF" # Required for adaptive icons on Android 8.0+
+  # adaptive_icon_foreground: "assets/foreground.png" # Foreground image for adaptive icons
+  # Remove or comment out these if you don't need them:
+  web:
+    generate: true
+    image_path: "assets/app_icon.png"
+    background_color: "#FFFFFF"
+    theme_color: "#FFFFFF"
+  windows:
+    generate: true
+    image_path: "assets/app_icon.png"
+    icon_size: 48 # min:48, max:256, default: 48
+  macos:
+    generate: true
+    image_path: "assets/app_icon.png"

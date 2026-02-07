@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../main.dart'; // For AppState and trial info
+import 'report_screen.dart'; // NEW: Import the ReportScreen
 
 import 'customer_list_screen.dart';
 // Import new screens
@@ -21,8 +22,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     CustomerListScreen(),
     OrderListScreen(),
     MeasurementListScreen(),
+    ReportScreen(), // NEW: Use the ReportScreen here
     // Placeholder for future Reports screen or Settings
-    Text('Reports Screen (Coming Soon)', style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold)),
   ];
 
   void _onItemTapped(int index) {
