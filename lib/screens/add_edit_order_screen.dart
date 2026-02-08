@@ -1,15 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
-// import '../models/customer.dart';
-// import '../models/measurement.dart';
 import '../models/order.dart';
-import '../main.dart'; // Import AppState
+import '../models/order_item.dart'; // NEW: OrderItem model
+import '../main.dart';
+import '../models/measurement.dart'; // Needed to display measurement details
 
 class AddEditOrderScreen extends StatefulWidget {
   final Order? order;
+  final String? initialCustomerId; // NEW: To pre-select customer
 
-  const AddEditOrderScreen({Key? key, this.order}) : super(key: key);
+  const AddEditOrderScreen({Key? key, this.order, this.initialCustomerId}) : super(key: key);
 
   @override
   State<AddEditOrderScreen> createState() => _AddEditOrderScreenState();
@@ -18,16 +19,16 @@ class AddEditOrderScreen extends StatefulWidget {
 class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
   final _formKey = GlobalKey<FormState>();
   String? _selectedCustomerId;
-  String? _selectedMeasurementId;
   DateTime _selectedDeliveryDate = DateTime.now();
   String _selectedStatus = 'Cutting';
 
-  final TextEditingController _totalPriceController = TextEditingController();
   final TextEditingController _advancePaymentController = TextEditingController();
-  final TextEditingController _remainingPaymentController = TextEditingController();
-  final TextEditingController _trackingNumberController = TextEditingController(); // NEW: Tracking number controller
+  final TextEditingController _trackingNumberController = TextEditingController();
+
+  List<OrderItem> _orderItems = []; // NEW: List of order items
 
   final List<String> _orderStatuses = ['Cutting', 'Stitching', 'Ready', 'Delivered'];
+  final List<String> _garmentTypes = ['Gents Qameez', 'Gents Shalwar', 'Ladies Shirt', 'Ladies Trouser', 'Ladies Dupatta', 'Custom']; // Sample garment types
 
   bool get _isEditing => widget.order != null;
 
@@ -36,36 +37,38 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
     super.initState();
     if (_isEditing) {
       _selectedCustomerId = widget.order!.customerId;
-      _selectedMeasurementId = widget.order!.measurementId;
       _selectedDeliveryDate = widget.order!.deliveryDate;
       _selectedStatus = widget.order!.status;
-      _totalPriceController.text = widget.order!.totalPrice.toStringAsFixed(2);
       _advancePaymentController.text = widget.order!.advancePayment.toStringAsFixed(2);
-      _remainingPaymentController.text = widget.order!.remainingPayment.toStringAsFixed(2);
-      _trackingNumberController.text = widget.order!.trackingNumber ?? ''; // NEW: Initialize tracking number
+      _trackingNumberController.text = widget.order!.trackingNumber ?? '';
+      _orderItems = List.from(widget.order!.items); // Copy existing items
     } else {
-      _totalPriceController.addListener(_updateRemainingPayment);
-      _advancePaymentController.addListener(_updateRemainingPayment);
+      _selectedCustomerId = widget.initialCustomerId; // NEW: Set initial customer
+      _orderItems.add(OrderItem(garmentType: _garmentTypes.first, itemPrice: 0.0, quantity: 1)); // Add a default item
     }
+    _advancePaymentController.addListener(_updatePayments);
   }
 
   @override
   void dispose() {
-    _totalPriceController.removeListener(_updateRemainingPayment);
-    _advancePaymentController.removeListener(_updateRemainingPayment);
-    _totalPriceController.dispose();
+    _advancePaymentController.removeListener(_updatePayments);
     _advancePaymentController.dispose();
-    _remainingPaymentController.dispose();
-    _trackingNumberController.dispose(); // NEW: Dispose tracking number controller
+    _trackingNumberController.dispose();
     super.dispose();
   }
 
-  void _updateRemainingPayment() {
-    final total = double.tryParse(_totalPriceController.text) ?? 0.0;
+  void _updatePayments() {
+    setState(() {}); // Rebuild to update calculated total and remaining
+  }
+
+  double get _calculatedTotalPrice {
+    return _orderItems.fold(0.0, (sum, item) => sum + item.totalItemPrice);
+  }
+
+  double get _calculatedRemainingPayment {
+    final total = _calculatedTotalPrice;
     final advance = double.tryParse(_advancePaymentController.text) ?? 0.0;
-    setState(() {
-      _remainingPaymentController.text = (total - advance).toStringAsFixed(2);
-    });
+    return total - advance;
   }
 
   Future<void> _selectDate(BuildContext context) async {
@@ -73,7 +76,7 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
       context: context,
       initialDate: _selectedDeliveryDate,
       firstDate: DateTime.now(),
-      lastDate: DateTime.now().add(const Duration(days: 365 * 2)), // 2 years from now
+      lastDate: DateTime.now().add(const Duration(days: 365 * 2)),
     );
     if (picked != null && picked != _selectedDeliveryDate) {
       setState(() {
@@ -82,25 +85,41 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
     }
   }
 
+  void _addOrderItem() {
+    setState(() {
+      _orderItems.add(OrderItem(garmentType: _garmentTypes.first, itemPrice: 0.0, quantity: 1));
+    });
+  }
+
+  void _removeOrderItem(int index) {
+    setState(() {
+      _orderItems.removeAt(index);
+    });
+  }
+
   Future<void> _saveOrder() async {
     if (_formKey.currentState!.validate()) {
       final appState = Provider.of<AppState>(context, listen: false);
       _formKey.currentState!.save();
 
-      final totalPrice = double.tryParse(_totalPriceController.text) ?? 0.0;
+      if (_orderItems.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please add at least one order item.')),
+        );
+        return;
+      }
+
       final advancePayment = double.tryParse(_advancePaymentController.text) ?? 0.0;
-      final remainingPayment = double.tryParse(_remainingPaymentController.text) ?? 0.0;
-      final trackingNumber = _trackingNumberController.text.trim().isEmpty ? null : _trackingNumberController.text.trim(); // NEW
+      final trackingNumber = _trackingNumberController.text.trim().isEmpty ? null : _trackingNumberController.text.trim();
 
       if (_isEditing) {
         widget.order!.customerId = _selectedCustomerId!;
-        widget.order!.measurementId = _selectedMeasurementId!;
         widget.order!.deliveryDate = _selectedDeliveryDate;
         widget.order!.status = _selectedStatus;
-        widget.order!.totalPrice = totalPrice;
         widget.order!.advancePayment = advancePayment;
-        widget.order!.remainingPayment = remainingPayment;
-        widget.order!.trackingNumber = trackingNumber; // NEW: Update tracking number
+        widget.order!.trackingNumber = trackingNumber;
+        widget.order!.items = _orderItems; // Update items list
+        // totalPrice and remainingPayment are calculated in AppState.updateOrder
         await appState.updateOrder(widget.order!);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Order updated for ${appState.getCustomerById(_selectedCustomerId!)?.name ?? ''}!')),
@@ -108,13 +127,13 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
       } else {
         final newOrder = Order(
           customerId: _selectedCustomerId!,
-          measurementId: _selectedMeasurementId!,
           deliveryDate: _selectedDeliveryDate,
           status: _selectedStatus,
-          totalPrice: totalPrice,
+          totalPrice: _calculatedTotalPrice, // Initial total price for new order
           advancePayment: advancePayment,
-          remainingPayment: remainingPayment,
-          trackingNumber: trackingNumber, // NEW: Add tracking number
+          remainingPayment: _calculatedRemainingPayment, // Initial remaining
+          trackingNumber: trackingNumber,
+          items: _orderItems, // Add items list
         );
         try {
           await appState.addOrder(newOrder);
@@ -136,17 +155,10 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
   Widget build(BuildContext context) {
     final appState = Provider.of<AppState>(context);
     final customers = appState.customers;
-    final measurements = appState.measurements;
 
-    final customerMeasurements = _selectedCustomerId != null
-        ? measurements.where((m) => m.customerId == _selectedCustomerId).toList()
-        : [];
-
+    // Ensure a customer is selected if not editing and there are customers
     if (!_isEditing && _selectedCustomerId == null && customers.isNotEmpty) {
       _selectedCustomerId = customers.first.key.toString();
-    }
-    if (!_isEditing && _selectedMeasurementId == null && customerMeasurements.isNotEmpty) {
-      _selectedMeasurementId = customerMeasurements.first.key.toString(); // ERROR FIX: Access first item in list
     }
 
     return Scaffold(
@@ -176,7 +188,6 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
                     ),
                   ),
                 ),
-              // Customer Selection
               DropdownButtonFormField<String>(
                 decoration: const InputDecoration(
                   labelText: 'Select Customer',
@@ -193,7 +204,6 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
                 onChanged: (newValue) {
                   setState(() {
                     _selectedCustomerId = newValue;
-                    _selectedMeasurementId = null;
                   });
                 },
                 validator: (value) {
@@ -204,38 +214,6 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
                 },
               ),
               const SizedBox(height: 16.0),
-              // Measurement Selection (filtered by customer)
-              DropdownButtonFormField<String>(
-                decoration: const InputDecoration(
-                  labelText: 'Select Measurement',
-                  prefixIcon: Icon(Icons.straighten),
-                ),
-                value: _selectedMeasurementId,
-                hint: Text(
-                  _selectedCustomerId == null
-                      ? 'Select a customer first'
-                      : (customerMeasurements.isEmpty ? 'No measurements for this customer' : 'Choose a measurement'),
-                ),
-                items: customerMeasurements.map((measurement) {
-                  return DropdownMenuItem<String>(
-                    value: measurement.key.toString(),
-                    child: Text('${measurement.type} (ID: ${measurement.key})'),
-                  );
-                }).toList(),
-                onChanged: customerMeasurements.isEmpty ? null : (newValue) {
-                  setState(() {
-                    _selectedMeasurementId = newValue;
-                  });
-                },
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Please select a measurement';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16.0),
-              // Delivery Date Picker
               ListTile(
                 title: Text(
                   'Delivery Date: ${DateFormat('dd MMM yyyy').format(_selectedDeliveryDate)}',
@@ -246,7 +224,6 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
                 contentPadding: EdgeInsets.zero,
               ),
               const SizedBox(height: 16.0),
-              // Order Status Dropdown
               DropdownButtonFormField<String>(
                 decoration: const InputDecoration(
                   labelText: 'Order Status',
@@ -272,7 +249,6 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
                 },
               ),
               const SizedBox(height: 16.0),
-              // NEW: Tracking Number Field
               TextFormField(
                 controller: _trackingNumberController,
                 decoration: const InputDecoration(
@@ -281,24 +257,163 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
                   prefixIcon: Icon(Icons.numbers),
                 ),
               ),
+              const SizedBox(height: 24.0),
+              // NEW: Order Items Section
+              Text(
+                'Order Items',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(color: Theme.of(context).primaryColor),
+              ),
               const SizedBox(height: 16.0),
-              // Price Fields
-              TextFormField(
-                controller: _totalPriceController,
-                decoration: const InputDecoration(
-                  labelText: 'Total Price (PKR)',
-                  prefixIcon: Icon(Icons.payments),
-                ),
-                keyboardType: TextInputType.numberWithOptions(decimal: true),
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Please enter total price';
-                  }
-                  if (double.tryParse(value) == null) {
-                    return 'Please enter a valid number';
-                  }
-                  return null;
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _orderItems.length,
+                itemBuilder: (context, index) {
+                  final item = _orderItems[index];
+                  final customerMeasurements = _selectedCustomerId != null
+                      ? appState.getMeasurementsForCustomer(_selectedCustomerId!)
+                      : <Measurement>[];
+
+                  return Card(
+                    margin: const EdgeInsets.symmetric(vertical: 8.0),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12.0),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: DropdownButtonFormField<String>(
+                                  decoration: const InputDecoration(
+                                    labelText: 'Garment Type',
+                                    prefixIcon: Icon(Icons.style),
+                                  ),
+                                  value: item.garmentType,
+                                  items: _garmentTypes.map((type) {
+                                    return DropdownMenuItem<String>(
+                                      value: type,
+                                      child: Text(type),
+                                    );
+                                  }).toList(),
+                                  onChanged: (newValue) {
+                                    setState(() {
+                                      item.garmentType = newValue!;
+                                    });
+                                  },
+                                  validator: (value) {
+                                    if (value == null || value.isEmpty) {
+                                      return 'Please select garment type';
+                                    }
+                                    return null;
+                                  },
+                                ),
+                              ),
+                              if (_orderItems.length > 1) // Only show remove if more than one item
+                                IconButton(
+                                  icon: const Icon(Icons.delete, color: Colors.red),
+                                  onPressed: () => _removeOrderItem(index),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 12.0),
+                          DropdownButtonFormField<String>(
+                            decoration: const InputDecoration(
+                              labelText: 'Measurement (Optional)',
+                              prefixIcon: Icon(Icons.straighten),
+                            ),
+                            value: item.measurementKey,
+                            hint: Text(
+                              _selectedCustomerId == null
+                                  ? 'Select customer first'
+                                  : (customerMeasurements.isEmpty ? 'No measurements' : 'Choose measurement'),
+                            ),
+                            items: customerMeasurements.map((measurement) {
+                              return DropdownMenuItem<String>(
+                                value: measurement.key.toString(),
+                                child: Text('${measurement.type} (ID: ${measurement.key}) - ${DateFormat('dd MMM yyyy').format(measurement.createdAt)}'),
+                              );
+                            }).toList(),
+                            onChanged: customerMeasurements.isEmpty ? null : (newValue) {
+                              setState(() {
+                                item.measurementKey = newValue;
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 12.0),
+                          TextFormField(
+                            initialValue: item.itemPrice.toStringAsFixed(2),
+                            decoration: const InputDecoration(
+                              labelText: 'Item Price (PKR)',
+                              prefixIcon: Icon(Icons.attach_money),
+                            ),
+                            keyboardType: TextInputType.numberWithOptions(decimal: true),
+                            onChanged: (value) {
+                              setState(() {
+                                item.itemPrice = double.tryParse(value) ?? 0.0;
+                                _updatePayments();
+                              });
+                            },
+                            validator: (value) {
+                              if (value == null || double.tryParse(value) == null) {
+                                return 'Enter valid price';
+                              }
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 12.0),
+                          TextFormField(
+                            initialValue: item.quantity.toString(),
+                            decoration: const InputDecoration(
+                              labelText: 'Quantity',
+                              prefixIcon: Icon(Icons.numbers),
+                            ),
+                            keyboardType: TextInputType.number,
+                            onChanged: (value) {
+                              setState(() {
+                                item.quantity = int.tryParse(value) ?? 1;
+                                _updatePayments();
+                              });
+                            },
+                            validator: (value) {
+                              if (value == null || int.tryParse(value) == null || int.parse(value) <= 0) {
+                                return 'Enter valid quantity';
+                              }
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 12.0),
+                          TextFormField(
+                            initialValue: item.specialInstructions,
+                            decoration: const InputDecoration(
+                              labelText: 'Special Instructions (Optional)',
+                              prefixIcon: Icon(Icons.text_fields),
+                            ),
+                            maxLines: 2,
+                            onChanged: (value) {
+                              setState(() {
+                                item.specialInstructions = value.isEmpty ? null : value;
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
                 },
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: _addOrderItem,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Add Another Item'),
+                ),
+              ),
+              const SizedBox(height: 24.0),
+              // Payment Summary
+              Text(
+                'Payment Summary',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(color: Theme.of(context).primaryColor),
               ),
               const SizedBox(height: 16.0),
               TextFormField(
@@ -319,16 +434,27 @@ class _AddEditOrderScreenState extends State<AddEditOrderScreen> {
                 },
               ),
               const SizedBox(height: 16.0),
-              TextFormField(
-                controller: _remainingPaymentController,
-                decoration: const InputDecoration(
-                  labelText: 'Remaining Payment (PKR)',
-                  prefixIcon: Icon(Icons.account_balance_wallet),
+              ListTile(
+                tileColor: Theme.of(context).cardTheme.color,
+                title: Text(
+                  'Total Order Price:',
+                  style: Theme.of(context).textTheme.titleMedium,
                 ),
-                keyboardType: TextInputType.numberWithOptions(decimal: true),
-                readOnly: true,
-                enabled: false,
-                style: TextStyle(color: Colors.grey[700]),
+                trailing: Text(
+                  'PKR ${_calculatedTotalPrice.toStringAsFixed(2)}',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                ),
+              ),
+              ListTile(
+                tileColor: Theme.of(context).cardTheme.color,
+                title: Text(
+                  'Remaining Payment:',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                trailing: Text(
+                  'PKR ${_calculatedRemainingPayment.toStringAsFixed(2)}',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold, color: _calculatedRemainingPayment > 0 ? Colors.red : Colors.green),
+                ),
               ),
               const SizedBox(height: 24.0),
               ElevatedButton.icon(

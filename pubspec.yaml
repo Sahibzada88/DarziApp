@@ -1,4 +1,4 @@
-name: darzi_app
+name: digital_darzi
 description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
@@ -38,6 +38,9 @@ dependencies:
   hive_flutter: ^1.1.0 # Or latest stable version from pub.dev
   provider: ^6.0.5 # Or latest stable version from pub.dev
   flutter_local_notifications: ^17.0.0
+  timezone: ^0.9.0
+  flutter_native_timezone: ^2.0.0
+  image_picker: ^1.1.2 # NEW: For image selection
   shared_preferences: ^2.1.1
   in_app_purchase: 3.2.3 # Or latest stable version from pub.dev
   intl: ^0.20.2 # Or latest stable version from pub.dev
@@ -58,6 +61,7 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
   flutter_launcher_icons: "^0.13.1" # Add this line (or latest version)
+  # flutter_launcher_name: ^0.0.1
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -105,6 +109,8 @@ flutter_launcher_icons:
   ios: "true"
   image_path: "assets/app_icon.png" # <--- IMPORTANT: Update this path!
   min_sdk_android: 21 # Set to your min Android SDK version
+  android_name: "Digital Darzi" 
+  ios_name: "Digital Darzi"
   # Optional: platform specific icons (if you need different icons for Android/iOS)
   # android_gravity: "center"
   # adaptive_icon_background: "#FFFFFF" # Required for adaptive icons on Android 8.0+

@@ -1,4 +1,5 @@
 import 'package:hive/hive.dart';
+import 'order_item.dart'; // NEW: Import OrderItem
 
 part 'order.g.dart';
 
@@ -7,35 +8,39 @@ class Order extends HiveObject {
   @HiveField(0)
   late String customerId;
 
-  @HiveField(1)
-  late String measurementId;
+  // @HiveField(1) // Removed, replaced by items with individual measurement keys
+  // late String measurementId;
 
-  @HiveField(2)
+  @HiveField(1) // Renumbered fields after removal
   late DateTime deliveryDate;
 
-  @HiveField(3)
+  @HiveField(2) // Renumbered
   late String status;
 
-  @HiveField(4)
-  late double totalPrice;
+  @HiveField(3) // Renumbered
+  late double totalPrice; // This will now be a calculated sum of order items
 
-  @HiveField(5)
+  @HiveField(4) // Renumbered
   late double advancePayment;
 
-  @HiveField(6)
+  @HiveField(5) // Renumbered
   late double remainingPayment;
 
-  @HiveField(7) // NEW: Add tracking number
-  late String? trackingNumber; // Made nullable for existing orders or optional
+  @HiveField(6) // Renumbered
+  late String? trackingNumber;
+
+  @HiveField(7) // NEW: List of order items
+  late List<OrderItem> items;
 
   Order({
     required this.customerId,
-    required this.measurementId,
+    // measurementId removed from constructor
     required this.deliveryDate,
     required this.status,
-    required this.totalPrice,
+    required this.totalPrice, // Still required for initial setting or display
     required this.advancePayment,
     required this.remainingPayment,
-    this.trackingNumber, // Add to constructor
-  });
+    this.trackingNumber,
+    List<OrderItem>? items, // New optional list of items
+  }) : this.items = items ?? []; // Initialize items if null
 }

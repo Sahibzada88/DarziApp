@@ -1,17 +1,25 @@
 import 'package:hive/hive.dart';
 
-part 'measurement.g.dart'; // This line will be generated
+part 'measurement.g.dart';
 
-@HiveType(typeId: 2) // Unique ID for this type
+@HiveType(typeId: 2)
 class Measurement extends HiveObject {
   @HiveField(0)
-  late String customerId; // Link to customer
+  late String customerId;
 
   @HiveField(1)
-  late String type; // e.g., 'Gents Qameez', 'Ladies Shirt'
+  late String type;
 
   @HiveField(2)
-  late Map<String, double> values; // e.g., {'Chest': 20.0, 'Sleeve': 24.5}
+  late Map<String, double> values;
 
-  Measurement({required this.customerId, required this.type, required this.values});
+  @HiveField(3) // NEW: Timestamp for measurement history
+  late DateTime createdAt;
+
+  Measurement({
+    required this.customerId,
+    required this.type,
+    required this.values,
+    DateTime? createdAt, // Optional in constructor, default to now
+  }) : this.createdAt = createdAt ?? DateTime.now(); // Initialize if not provided
 }

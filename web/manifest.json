@@ -1,6 +1,6 @@
 {
-    "name": "darzi_app",
-    "short_name": "darzi_app",
+    "name": "Digital Darzi",
+    "short_name": "Digital Darzi",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#FFFFFF",

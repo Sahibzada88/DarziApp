@@ -94,7 +94,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
               child: const Text('Upgrade'),
             ),
         ],
-      ),
+      )
     );
   }
 

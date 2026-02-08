@@ -18,13 +18,13 @@ class OrderAdapter extends TypeAdapter<Order> {
     };
     return Order(
       customerId: fields[0] as String,
-      measurementId: fields[1] as String,
-      deliveryDate: fields[2] as DateTime,
-      status: fields[3] as String,
-      totalPrice: fields[4] as double,
-      advancePayment: fields[5] as double,
-      remainingPayment: fields[6] as double,
-      trackingNumber: fields[7] as String?,
+      deliveryDate: fields[1] as DateTime,
+      status: fields[2] as String,
+      totalPrice: fields[3] as double,
+      advancePayment: fields[4] as double,
+      remainingPayment: fields[5] as double,
+      trackingNumber: fields[6] as String?,
+      items: (fields[7] as List?)?.cast<OrderItem>(),
     );
   }
 
@@ -35,19 +35,19 @@ class OrderAdapter extends TypeAdapter<Order> {
       ..writeByte(0)
       ..write(obj.customerId)
       ..writeByte(1)
-      ..write(obj.measurementId)
-      ..writeByte(2)
       ..write(obj.deliveryDate)
-      ..writeByte(3)
+      ..writeByte(2)
       ..write(obj.status)
-      ..writeByte(4)
+      ..writeByte(3)
       ..write(obj.totalPrice)
-      ..writeByte(5)
+      ..writeByte(4)
       ..write(obj.advancePayment)
-      ..writeByte(6)
+      ..writeByte(5)
       ..write(obj.remainingPayment)
+      ..writeByte(6)
+      ..write(obj.trackingNumber)
       ..writeByte(7)
-      ..write(obj.trackingNumber);
+      ..write(obj.items);
   }
 
   @override

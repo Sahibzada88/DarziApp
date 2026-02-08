@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:intl/intl.dart'; // For date formatting
 import '../models/measurement.dart';
-import '../main.dart'; // Import AppState
+import '../main.dart';
 import 'add_edit_measurement_screen.dart';
-// import '../models/customer.dart'; // To get customer name
 
-class MeasurementListScreen extends StatefulWidget { // Changed to StatefulWidget for search bar
+class MeasurementListScreen extends StatefulWidget {
   const MeasurementListScreen({Key? key}) : super(key: key);
 
   @override
@@ -43,11 +43,10 @@ class _MeasurementListScreenState extends State<MeasurementListScreen> {
           ElevatedButton(
             onPressed: () {
               Navigator.of(ctx).pop();
-              // TODO: Navigate to Subscription/Upgrade screen (Phase 4)
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Taking you to upgrade options...')),
               );
-              Provider.of<AppState>(context, listen: false).upgradeToPremium(); // For testing
+              Provider.of<AppState>(context, listen: false).upgradeToPremium();
             },
             child: const Text('Upgrade Now'),
           ),
@@ -61,7 +60,7 @@ class _MeasurementListScreenState extends State<MeasurementListScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Measurements'),
-        bottom: PreferredSize( // Add search bar below AppBar
+        bottom: PreferredSize(
           preferredSize: const Size.fromHeight(kToolbarHeight),
           child: Padding(
             padding: const EdgeInsets.all(8.0),
@@ -104,7 +103,7 @@ class _MeasurementListScreenState extends State<MeasurementListScreen> {
       ),
       body: Consumer<AppState>(
         builder: (context, appState, child) {
-          if (appState.measurements.isEmpty) { // Check filtered list
+          if (appState.measurements.isEmpty) {
             return Center(
               child: Text(
                 _searchController.text.isEmpty
@@ -231,7 +230,10 @@ class MeasurementCard extends StatelessWidget {
           '${measurement.type} for $customerName',
           style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
         ),
-        subtitle: Text('ID: ${measurement.key}', style: Theme.of(context).textTheme.bodySmall),
+        subtitle: Text(
+          'ID: ${measurement.key} - ${DateFormat('dd MMM yyyy').format(measurement.createdAt)}', // NEW: Display created date
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [

@@ -134,7 +134,7 @@ class ReportScreen extends StatelessWidget {
                     trailing: Chip(
                       label: Text(count.toString()),
                       backgroundColor: _getStatusColor(status).withOpacity(0.2),
-                      labelStyle: TextStyle(color: _getStatusColor(status).darken(0.2)),
+                      labelStyle: TextStyle(color: _getStatusColor(status)),
                     ),
                   );
                 },
@@ -214,15 +214,5 @@ class ReportScreen extends StatelessWidget {
       case 'Delivered': return Colors.grey;
       default: return Colors.grey;
     }
-  }
-}
-
-// Extension to darken colors (useful for chip text)
-extension ColorBrightness on Color {
-  Color darken([double amount = .1]) {
-    assert(amount >= 0 && amount <= 1);
-    final hsl = HSLColor.fromColor(this);
-    final hslDark = hsl.withLightness((hsl.lightness - amount).clamp(0.0, 1.0));
-    return hslDark.toColor();
   }
 }

@@ -2,15 +2,24 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:provider/provider.dart';
-// import 'package:path_provider/path_provider.dart'; // Add this import
-
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:intl/intl.dart';
+import 'package:timezone/data/latest_all.dart' as tz;
+import 'package:timezone/timezone.dart' as tz;
+import 'package:flutter_native_timezone/flutter_native_timezone.dart';
 
 // Import your Hive models
 import 'models/customer.dart';
 import 'models/order.dart';
 import 'models/measurement.dart';
 import 'models/subscription_info.dart';
-import 'screens/main_home_screen.dart'; // Add this import
+import 'models/order_item.dart'; // NEW: Import OrderItem
+import 'screens/main_home_screen.dart';
+
+// NEW: Notification plugin instance
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+    FlutterLocalNotificationsPlugin();
+
 // =======================================================================
 // PHASE 1: Step 1.6 - Setup Provider for app state management
 // Our global app state, accessible from anywhere in the app
@@ -53,12 +62,14 @@ class AppState extends ChangeNotifier {
     final trialEnd = _currentSubscriptionInfo!.trialStartDate!.add(const Duration(days: trialDurationDays));
     return now.isBefore(trialEnd);
   }
+  
   int get daysLeftInTrial {
     if (!isTrialActive) return 0;
     final now = DateTime.now();
     final trialEnd = _currentSubscriptionInfo!.trialStartDate!.add(const Duration(days: trialDurationDays));
     return trialEnd.difference(now).inDays + 1; // +1 to count current day
   }
+  
   bool get hasUsedTrial => _currentSubscriptionInfo?.hasUsedTrial == true;
 
   // --- Reporting Methods (NEW) ---
@@ -107,6 +118,7 @@ class AppState extends ChangeNotifier {
     _customerSearchQuery = query.toLowerCase();
     notifyListeners(); // Notify to re-filter the list
   }
+  
   List<Customer> get customers {
     if (_customerSearchQuery.isEmpty) {
       return _customers;
@@ -139,6 +151,7 @@ class AppState extends ChangeNotifier {
     _measurementSearchQuery = query.toLowerCase();
     notifyListeners(); // Notify to re-filter the list
   }
+  
   List<Measurement> get measurements {
     if (_measurementSearchQuery.isEmpty) {
       return _measurements;
@@ -172,6 +185,7 @@ class AppState extends ChangeNotifier {
     _orderSearchQuery = query.toLowerCase();
     notifyListeners(); // Notify to re-filter the list
   }
+  
   List<Order> get orders {
     if (_orderSearchQuery.isEmpty) {
       return _orders;
@@ -199,13 +213,71 @@ class AppState extends ChangeNotifier {
     return "You can add ${maxFreeOrders - orderCount} more orders (Max $maxFreeOrders in free/trial).";
   }
 
+  // --- NEW: Notification Initialization ---
+  Future<void> _initializeNotifications() async {
+    const AndroidInitializationSettings initializationSettingsAndroid =
+        AndroidInitializationSettings('app_icon'); // Ensure 'app_icon' exists in drawable
+    const DarwinInitializationSettings initializationSettingsIOS =
+        DarwinInitializationSettings();
+    const InitializationSettings initializationSettings = InitializationSettings(
+        android: initializationSettingsAndroid, 
+        iOS: initializationSettingsIOS);
+    
+    await flutterLocalNotificationsPlugin.initialize(
+      initializationSettings,
+      onDidReceiveNotificationResponse: (NotificationResponse notificationResponse) async {
+        // Handle notification tap
+        // For example, navigate to the order details screen
+        print('Notification tapped: ${notificationResponse.payload}');
+      },
+    );
+  }
+
+  // --- NEW: Notification scheduling method ---
+  Future<void> _scheduleDeliveryNotification(Order order) async {
+    final int notificationId = order.key as int; // Use order key as unique ID
+    await flutterLocalNotificationsPlugin.cancel(notificationId); // Cancel previous if rescheduling
+
+    final DateTime scheduledDate = order.deliveryDate.subtract(const Duration(days: 1)); // Notify 1 day before
+
+    if (scheduledDate.isAfter(DateTime.now())) {
+      const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+        'delivery_channel_id',
+        'Delivery Reminders',
+        channelDescription: 'Reminders for upcoming order deliveries',
+        importance: Importance.high,
+        priority: Priority.high,
+      );
+      const DarwinNotificationDetails iOSDetails = DarwinNotificationDetails();
+      const NotificationDetails platformDetails = NotificationDetails(
+        android: androidDetails,
+        iOS: iOSDetails,
+      );
+
+      final tz.TZDateTime tzScheduled = tz.TZDateTime.from(scheduledDate, tz.local);
+
+      await flutterLocalNotificationsPlugin.zonedSchedule(
+        notificationId,
+        'Order Delivery Reminder!',
+        'Order for ${getCustomerById(order.customerId)?.name ?? 'a customer'} is due on ${DateFormat('dd MMM yyyy').format(order.deliveryDate)}.',
+        tzScheduled,
+        platformDetails,
+        uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        payload: order.key.toString(),
+      );
+      print('Scheduled notification for order ${order.key} on $scheduledDate');
+    }
+  }
+
   // Constructor and Initialization
   AppState() {
     _initializeServices();
+    _initializeNotifications(); // NEW: Initialize notifications
   }
 
   Future<void> _initializeServices() async {
-    // ✅ Use Hive.box() to get already-opened boxes (not openBox)
+    // Use Hive.box() to get already-opened boxes (not openBox)
     customerBox = Hive.box<Customer>('customers');
     orderBox = Hive.box<Order>('orders');
     measurementBox = Hive.box<Measurement>('measurements');
@@ -287,6 +359,7 @@ class AppState extends ChangeNotifier {
     final customerKey = customer.key as int;
     final associatedOrders = orderBox.values.where((o) => o.customerId == customerKey.toString()).toList();
     for (var order in associatedOrders) {
+      // Need to also delete order items if they were in a separate box (not needed now)
       await order.delete();
     }
     final associatedMeasurements = measurementBox.values.where((m) => m.customerId == customerKey.toString()).toList();
@@ -344,8 +417,12 @@ class AppState extends ChangeNotifier {
     return measurementBox.get(int.parse(measurementId));
   }
 
+  // UPDATED: Sort measurements by newest first
   List<Measurement> getMeasurementsForCustomer(String customerId) {
-    return _measurements.where((m) => m.customerId == customerId).toList();
+    return _measurements
+        .where((m) => m.customerId == customerId)
+        .toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt)); // Sort by newest first
   }
 
   // --- Methods for Order Management ---
@@ -358,6 +435,7 @@ class AppState extends ChangeNotifier {
     _loadOrders();
   }
 
+  // UPDATED: Add order with items and notification scheduling
   Future<void> addOrder(Order order) async {
     if (!canAddMoreOrders && !isPremiumUser) {
       if (!isTrialActive && !hasUsedTrial) {
@@ -371,13 +449,29 @@ class AppState extends ChangeNotifier {
          throw Exception("Order limit reached. Upgrade to add more orders.");
       }
     }
+    
+    // Recalculate totalPrice and remainingPayment based on items
+    order.totalPrice = order.items.fold(0.0, (sum, item) => sum + item.totalItemPrice);
+    order.remainingPayment = order.totalPrice - order.advancePayment;
+
     await orderBox.add(order);
     _loadOrders();
+    
+    // Schedule notification if delivery date is in the future
+    _scheduleDeliveryNotification(order);
   }
 
+  // UPDATED: Update order with items and notification rescheduling
   Future<void> updateOrder(Order order) async {
+    // Recalculate totalPrice and remainingPayment based on items
+    order.totalPrice = order.items.fold(0.0, (sum, item) => sum + item.totalItemPrice);
+    order.remainingPayment = order.totalPrice - order.advancePayment;
+
     await order.save();
     _loadOrders();
+    
+    // Reschedule notification for updated order
+    _scheduleDeliveryNotification(order);
   }
 
   Future<void> deleteOrder(Order order) async {
@@ -401,18 +495,27 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Hive.initFlutter();
-  // print('Hive path: ${(await getApplicationDocumentsDirectory()).path}');
 
   Hive.registerAdapter(CustomerAdapter());
   Hive.registerAdapter(OrderAdapter());
   Hive.registerAdapter(MeasurementAdapter());
   Hive.registerAdapter(SubscriptionInfoAdapter());
+  Hive.registerAdapter(OrderItemAdapter()); // NEW: Register OrderItemAdapter
 
-  // ✅ Open boxes HERE before runApp - this ensures data persists
+  // Open boxes HERE before runApp - this ensures data persists
   await Hive.openBox<Customer>('customers');
   await Hive.openBox<Order>('orders');
   await Hive.openBox<Measurement>('measurements');
   await Hive.openBox<SubscriptionInfo>('subscriptionInfo');
+
+  // Initialize timezone data for scheduled notifications
+  tz.initializeTimeZones();
+  try {
+    final String localTimeZone = await FlutterNativeTimezone.getLocalTimezone();
+    tz.setLocalLocation(tz.getLocation(localTimeZone));
+  } catch (e) {
+    tz.setLocalLocation(tz.UTC);
+  }
 
   runApp(
     ChangeNotifierProvider(
@@ -421,6 +524,7 @@ void main() async {
     ),
   );
 }
+
 // =======================================================================
 // DarziApp: The root widget of our application
 // =======================================================================
@@ -440,7 +544,7 @@ class DarziApp extends StatelessWidget {
           foregroundColor: Colors.white,
           iconTheme: IconThemeData(color: Colors.white),
         ),
-        cardTheme: CardThemeData( // Changed CardThemeData to CardTheme
+        cardTheme: CardThemeData(
           elevation: 4,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),

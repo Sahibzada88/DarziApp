@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'dart:io'; // For File
 import '../models/customer.dart';
-import '../main.dart'; // Import AppState
+import '../main.dart';
 import 'add_edit_customer_screen.dart';
+import 'customer_detail_screen.dart'; // NEW: Import detail screen
 
-class CustomerListScreen extends StatefulWidget { // Changed to StatefulWidget for search bar
+class CustomerListScreen extends StatefulWidget {
   const CustomerListScreen({Key? key}) : super(key: key);
 
   @override
@@ -42,7 +44,6 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
           ElevatedButton(
             onPressed: () {
               Navigator.of(ctx).pop();
-              // TODO: Navigate to Subscription/Upgrade screen (Phase 4)
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Taking you to upgrade options...')),
               );
@@ -60,7 +61,7 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Customers'),
-        bottom: PreferredSize( // Add search bar below AppBar
+        bottom: PreferredSize(
           preferredSize: const Size.fromHeight(kToolbarHeight),
           child: Padding(
             padding: const EdgeInsets.all(8.0),
@@ -103,7 +104,6 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
       ),
       body: Consumer<AppState>(
         builder: (context, appState, child) {
-          // --- Trial/Subscription Banner ---
           Widget? trialBanner;
           if (!appState.isPremiumUser) {
             if (appState.isTrialActive) {
@@ -128,7 +128,7 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text('Navigate to Subscription Page!')),
                           );
-                          appState.upgradeToPremium(); // For testing
+                          appState.upgradeToPremium();
                         },
                         child: const Text('Upgrade Now'),
                       ),
@@ -158,7 +158,7 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text('Navigate to Subscription Page!')),
                           );
-                          appState.upgradeToPremium(); // For testing
+                          appState.upgradeToPremium();
                         },
                         child: const Text('Upgrade to continue'),
                       ),
@@ -224,6 +224,13 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
                           );
                         }
                       },
+                      onTap: () { // NEW: Handle tap to view details
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (context) => CustomerDetailScreen(customer: customer),
+                          ),
+                        );
+                      },
                     );
                   },
                 ),
@@ -279,59 +286,74 @@ class CustomerCard extends StatelessWidget {
   final Customer customer;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final VoidCallback onTap; // NEW: onTap callback
 
   const CustomerCard({
     Key? key,
     required this.customer,
     required this.onEdit,
     required this.onDelete,
+    required this.onTap, // NEW
   }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return Card(
-      // Margin already defined in ThemeData.cardTheme, no need for explicit here if consistent.
-      // margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      child: Padding(
-        padding: const EdgeInsets.all(8.0),
-        child: Row(
-          children: [
-            CircleAvatar(
-              backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
-              child: Icon(Icons.person, color: Theme.of(context).primaryColor),
-            ),
-            const SizedBox(width: 15),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    customer.name,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Phone: ${customer.phone}',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  Text(
-                    'Address: ${customer.address}',
-                    style: Theme.of(context).textTheme.bodySmall,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
+      child: InkWell( // NEW: Make the card tappable
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: Row(
+            children: [
+              CircleAvatar(
+                backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
+                backgroundImage: customer.profileImagePath != null
+                    ? FileImage(File(customer.profileImagePath!))
+                    : null,
+                child: customer.profileImagePath == null
+                    ? Icon(Icons.person, color: Theme.of(context).primaryColor)
+                    : null,
               ),
-            ),
-            IconButton(
-              icon: Icon(Icons.edit, color: Colors.grey[600]),
-              onPressed: onEdit,
-            ),
-            IconButton(
-              icon: const Icon(Icons.delete, color: Colors.red),
-              onPressed: onDelete,
-            ),
-          ],
+              const SizedBox(width: 15),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      customer.name,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Phone: ${customer.phone}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    Text(
+                      'Address: ${customer.address}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                     if (customer.notes != null && customer.notes!.isNotEmpty) // NEW: Display notes
+                       Text(
+                         'Notes: ${customer.notes}',
+                         style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
+                         maxLines: 1,
+                         overflow: TextOverflow.ellipsis,
+                       ),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: Icon(Icons.edit, color: Colors.grey[600]),
+                onPressed: onEdit,
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete, color: Colors.red),
+                onPressed: onDelete,
+              ),
+            ],
+          ),
         ),
       ),
     );

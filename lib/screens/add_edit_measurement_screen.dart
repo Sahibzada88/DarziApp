@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-//import '../models/customer.dart';
 import '../models/measurement.dart';
-import '../main.dart'; // Import AppState
+import '../main.dart';
 
 class AddEditMeasurementScreen extends StatefulWidget {
   final Measurement? measurement;
+  final String? initialCustomerId; // NEW: To pre-select customer
 
-  const AddEditMeasurementScreen({Key? key, this.measurement}) : super(key: key);
+  const AddEditMeasurementScreen({Key? key, this.measurement, this.initialCustomerId}) : super(key: key);
 
   @override
   State<AddEditMeasurementScreen> createState() => _AddEditMeasurementScreenState();
@@ -16,12 +16,11 @@ class AddEditMeasurementScreen extends StatefulWidget {
 class _AddEditMeasurementScreenState extends State<AddEditMeasurementScreen> {
   final _formKey = GlobalKey<FormState>();
   String? _selectedCustomerId;
-  String _selectedMeasurementType = 'Gents Qameez'; // Default type
+  String _selectedMeasurementType = 'Gents Qameez';
   final Map<String, TextEditingController> _measurementControllers = {};
 
   bool get _isEditing => widget.measurement != null;
 
-  // Define default measurement fields for Gents and Ladies
   final Map<String, List<String>> _measurementTemplates = {
     'Gents Qameez': ['Length', 'Chest', 'Shoulder', 'Sleeve', 'Collar', 'Waist', 'Hip'],
     'Gents Shalwar': ['Length', 'Hip', 'Bottom'],
@@ -40,7 +39,7 @@ class _AddEditMeasurementScreenState extends State<AddEditMeasurementScreen> {
         _measurementControllers[key] = TextEditingController(text: value.toString());
       });
     } else {
-      // Initialize controllers for the default type when adding
+      _selectedCustomerId = widget.initialCustomerId; // NEW: Set initial customer
       _measurementTemplates[_selectedMeasurementType]?.forEach((field) {
         _measurementControllers[field] = TextEditingController();
       });

@@ -2,11 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../models/order.dart';
-import '../main.dart'; // Import AppState
+// import '../models/order_item.dart'; // NEW: Import OrderItem
+import '../main.dart';
 import 'add_edit_order_screen.dart';
-//import '../models/customer.dart'; // To get customer name - not directly used here
+import '../models/measurement.dart'; // Needed to look up measurement names
 
-class OrderListScreen extends StatefulWidget { // Changed to StatefulWidget for search bar
+class OrderListScreen extends StatefulWidget {
   const OrderListScreen({Key? key}) : super(key: key);
 
   @override
@@ -55,11 +56,10 @@ class _OrderListScreenState extends State<OrderListScreen> {
           ElevatedButton(
             onPressed: () {
               Navigator.of(ctx).pop();
-              // TODO: Navigate to Subscription/Upgrade screen (Phase 4)
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Taking you to upgrade options...')),
               );
-              Provider.of<AppState>(context, listen: false).upgradeToPremium(); // For testing
+              Provider.of<AppState>(context, listen: false).upgradeToPremium();
             },
             child: const Text('Upgrade Now'),
           ),
@@ -69,11 +69,11 @@ class _OrderListScreenState extends State<OrderListScreen> {
   }
 
   @override
-  Widget build(BuildContext context) { // Corrected build method signature
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Orders'),
-        bottom: PreferredSize( // Add search bar below AppBar
+        bottom: PreferredSize(
           preferredSize: const Size.fromHeight(kToolbarHeight),
           child: Padding(
             padding: const EdgeInsets.all(8.0),
@@ -116,7 +116,7 @@ class _OrderListScreenState extends State<OrderListScreen> {
       ),
       body: Consumer<AppState>(
         builder: (context, appState, child) {
-          if (appState.orders.isEmpty) { // Check filtered list
+          if (appState.orders.isEmpty) {
             return Center(
               child: Text(
                 _searchController.text.isEmpty
@@ -236,71 +236,122 @@ class OrderCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final appState = Provider.of<AppState>(context); // Access AppState to get Measurement details
+
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
+      child: ExpansionTile( // Changed to ExpansionTile to show order items
+        leading: CircleAvatar(
+          backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
+          child: Icon(Icons.receipt_long, color: Theme.of(context).primaryColor),
+        ),
+        title: Text(
+          'Order for $customerName',
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Expanded(
-                  child: Text(
-                    'Order for $customerName',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: statusColor,
-                    borderRadius: BorderRadius.circular(5),
-                  ),
-                  child: Text(
-                    order.status,
-                    style: TextStyle(
-                      color: Colors.grey[800],
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            if (order.trackingNumber != null && order.trackingNumber!.isNotEmpty) // NEW: Display tracking number
-              Padding(
-                padding: const EdgeInsets.only(top: 4.0),
-                child: Text(
-                  'Tracking #: ${order.trackingNumber}',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[700]),
-                ),
+            Text('Delivery: ${DateFormat('dd MMM yyyy').format(order.deliveryDate)}'),
+            if (order.trackingNumber != null && order.trackingNumber!.isNotEmpty)
+              Text('Tracking #: ${order.trackingNumber}'),
+            Chip(
+              label: Text(
+                order.status,
+                style: TextStyle(color: Colors.grey[800], fontSize: 12, fontWeight: FontWeight.w600),
               ),
-            const SizedBox(height: 8),
-            Text('Delivery Date: ${DateFormat('dd MMM yyyy').format(order.deliveryDate)}'),
-            Text('Total: PKR ${order.totalPrice.toStringAsFixed(2)}'),
-            Text('Advance: PKR ${order.advancePayment.toStringAsFixed(2)}'),
-            Text('Remaining: PKR ${order.remainingPayment.toStringAsFixed(2)}'),
-            const SizedBox(height: 10),
-            Align(
-              alignment: Alignment.bottomRight,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    icon: Icon(Icons.edit, color: Colors.grey[600]),
-                    onPressed: onEdit,
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.red),
-                    onPressed: onDelete,
-                  ),
-                ],
-              ),
+              backgroundColor: statusColor,
+              padding: EdgeInsets.zero,
+              labelPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
           ],
         ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: Icon(Icons.edit, color: Colors.grey[600]),
+              onPressed: onEdit,
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete, color: Colors.red),
+              onPressed: onDelete,
+            ),
+          ],
+        ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Order Items:',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+                ),
+                ...order.items.map((item) {
+                  final Measurement? itemMeasurement = item.measurementKey != null
+                      ? appState.getMeasurementById(item.measurementKey!)
+                      : null;
+                  return Padding(
+                    padding: const EdgeInsets.only(left: 8.0, top: 4.0, bottom: 4.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '- ${item.quantity} x ${item.garmentType} (PKR ${item.itemPrice.toStringAsFixed(2)} each)',
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                        if (itemMeasurement != null)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 16.0),
+                            child: Text(
+                              'Measurement: ${itemMeasurement.type} (ID: ${itemMeasurement.key})',
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
+                            ),
+                          ),
+                        if (item.specialInstructions != null && item.specialInstructions!.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 16.0),
+                            child: Text(
+                              'Instructions: ${item.specialInstructions}',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+                const Divider(),
+                _buildOrderSummaryRow(context, 'Total:', 'PKR ${order.totalPrice.toStringAsFixed(2)}', isBold: true),
+                _buildOrderSummaryRow(context, 'Advance:', 'PKR ${order.advancePayment.toStringAsFixed(2)}'),
+                _buildOrderSummaryRow(
+                    context, 'Remaining:', 'PKR ${order.remainingPayment.toStringAsFixed(2)}',
+                    textColor: order.remainingPayment > 0 ? Colors.red : Colors.green),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOrderSummaryRow(BuildContext context, String label, String value, {bool isBold = false, Color? textColor}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: isBold ? FontWeight.bold : FontWeight.normal),
+          ),
+          Text(
+            value,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: isBold ? FontWeight.bold : FontWeight.normal, color: textColor),
+          ),
+        ],
       ),
     );
   }

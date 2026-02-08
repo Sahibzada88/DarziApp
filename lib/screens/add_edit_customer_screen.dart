@@ -1,10 +1,13 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:image_picker/image_picker.dart'; // NEW: Image picker
+import 'dart:io'; // For File
 import '../models/customer.dart';
-import '../main.dart'; // Import AppState
+import '../main.dart';
 
 class AddEditCustomerScreen extends StatefulWidget {
-  final Customer? customer; // Null for add, not null for edit
+  final Customer? customer;
 
   const AddEditCustomerScreen({Key? key, this.customer}) : super(key: key);
 
@@ -17,6 +20,9 @@ class _AddEditCustomerScreenState extends State<AddEditCustomerScreen> {
   late TextEditingController _nameController;
   late TextEditingController _phoneController;
   late TextEditingController _addressController;
+  late TextEditingController _notesController; // NEW: Notes controller
+
+  String? _profileImagePath; // NEW: To store the selected image path
 
   bool get _isEditing => widget.customer != null;
 
@@ -26,6 +32,8 @@ class _AddEditCustomerScreenState extends State<AddEditCustomerScreen> {
     _nameController = TextEditingController(text: widget.customer?.name ?? '');
     _phoneController = TextEditingController(text: widget.customer?.phone ?? '');
     _addressController = TextEditingController(text: widget.customer?.address ?? '');
+    _notesController = TextEditingController(text: widget.customer?.notes ?? ''); // NEW: Init notes
+    _profileImagePath = widget.customer?.profileImagePath; // NEW: Init image path
   }
 
   @override
@@ -33,7 +41,31 @@ class _AddEditCustomerScreenState extends State<AddEditCustomerScreen> {
     _nameController.dispose();
     _phoneController.dispose();
     _addressController.dispose();
+    _notesController.dispose(); // NEW: Dispose notes controller
     super.dispose();
+  }
+
+  // NEW: Image picking method
+// NEW: Image picking method
+  Future<void> _pickImage() async {
+    if (kIsWeb) {
+      // On web, we can't pick local files easily
+      // Use a placeholder or implement web image picker
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Image upload not supported on web. Use mobile app for this feature.'),
+        ),
+      );
+      return;
+    }
+    
+    final ImagePicker picker = ImagePicker();
+    final XFile? image = await picker.pickImage(source: ImageSource.gallery);
+    if (image != null) {
+      setState(() {
+        _profileImagePath = image.path;
+      });
+    }
   }
 
   Future<void> _saveCustomer() async {
@@ -42,20 +74,22 @@ class _AddEditCustomerScreenState extends State<AddEditCustomerScreen> {
       _formKey.currentState!.save();
 
       if (_isEditing) {
-        // Update existing customer
         widget.customer!.name = _nameController.text;
         widget.customer!.phone = _phoneController.text;
         widget.customer!.address = _addressController.text;
+        widget.customer!.notes = _notesController.text.isNotEmpty ? _notesController.text : null; // NEW: Save notes
+        widget.customer!.profileImagePath = _profileImagePath; // NEW: Save image path
         await appState.updateCustomer(widget.customer!);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Customer ${widget.customer!.name} updated!')),
         );
       } else {
-        // Add new customer
         final newCustomer = Customer(
           name: _nameController.text,
           phone: _phoneController.text,
           address: _addressController.text,
+          notes: _notesController.text.isNotEmpty ? _notesController.text : null, // NEW: Save notes
+          profileImagePath: _profileImagePath, // NEW: Save image path
         );
         try {
           await appState.addCustomer(newCustomer);
@@ -63,18 +97,16 @@ class _AddEditCustomerScreenState extends State<AddEditCustomerScreen> {
             SnackBar(content: Text('Customer ${newCustomer.name} added!')),
           );
         } catch (e) {
-          // Catch the limit exception from AppState
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(e.toString().replaceAll('Exception: ', ''))),
           );
-          // Optionally show a dialog for upgrade prompt if it's a limit issue
           if (e.toString().contains('Upgrade')) {
-            // Navigate to Subscription/Upgrade screen or show a specific dialog
+            // Optionally navigate to Subscription/Upgrade screen
           }
-          return; // Don't pop if adding failed due to limit
+          return;
         }
       }
-      Navigator.of(context).pop(); // Go back to customer list
+      Navigator.of(context).pop();
     }
   }
 
@@ -85,14 +117,14 @@ class _AddEditCustomerScreenState extends State<AddEditCustomerScreen> {
       appBar: AppBar(
         title: Text(_isEditing ? 'Edit Customer' : 'Add Customer'),
       ),
-      body: SingleChildScrollView( // Allows scrolling on small screens
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Form(
           key: _formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              if (!_isEditing && !appState.isPremiumUser) // Show limit message only when adding
+              if (!_isEditing && !appState.isPremiumUser)
                 Card(
                   margin: const EdgeInsets.only(bottom: 16.0),
                   color: appState.customerCount >= AppState.maxFreeCustomers ? Colors.red[50] : Colors.blue[50],
@@ -108,6 +140,23 @@ class _AddEditCustomerScreenState extends State<AddEditCustomerScreen> {
                     ),
                   ),
                 ),
+              // NEW: Profile Image Picker
+              Center(
+                child: GestureDetector(
+                  onTap: _pickImage,
+                  child: CircleAvatar(
+                    radius: 60,
+                    backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
+                    backgroundImage: _profileImagePath != null
+                        ? FileImage(File(_profileImagePath!))
+                        : null,
+                    child: _profileImagePath == null
+                        ? Icon(Icons.camera_alt, size: 40, color: Theme.of(context).primaryColor)
+                        : null,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24.0),
               TextFormField(
                 controller: _nameController,
                 decoration: const InputDecoration(
@@ -135,7 +184,6 @@ class _AddEditCustomerScreenState extends State<AddEditCustomerScreen> {
                   if (value == null || value.isEmpty) {
                     return 'Please enter phone number';
                   }
-                  // Basic phone number validation for Pakistan
                   if (!RegExp(r'^(0?3[0-4]\d{1}[0-9]{7})$').hasMatch(value) &&
                       !RegExp(r'^(\+923[0-4]\d{1}[0-9]{7})$').hasMatch(value)) {
                     return 'Please enter a valid Pakistani phone number (e.g., 03XX-XXXXXXX)';
@@ -159,6 +207,18 @@ class _AddEditCustomerScreenState extends State<AddEditCustomerScreen> {
                   }
                   return null;
                 },
+              ),
+              const SizedBox(height: 16.0),
+              // NEW: Notes field
+              TextFormField(
+                controller: _notesController,
+                decoration: const InputDecoration(
+                  labelText: 'Customer Notes (Optional)',
+                  hintText: 'e.g., Prefers slim fit, sensitive to fabric type',
+                  prefixIcon: Icon(Icons.notes),
+                ),
+                maxLines: 3,
+                minLines: 1,
               ),
               const SizedBox(height: 24.0),
               ElevatedButton.icon(
